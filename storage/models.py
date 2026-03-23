@@ -42,10 +42,21 @@ def create_tables():
             description TEXT,
             assignee VARCHAR(255),
             jira_ticket_id VARCHAR(100),
+            jira_worthy BOOLEAN DEFAULT TRUE,
+            jira_reason VARCHAR(500),
+            module VARCHAR(255) DEFAULT 'General',
+            is_grouped BOOLEAN DEFAULT FALSE,
+            dismissed BOOLEAN DEFAULT FALSE,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (meeting_id) REFERENCES meetings(id)
         )
     """)
+    # Add columns if they don't exist
+    for col, definition in [("jira_worthy", "BOOLEAN DEFAULT TRUE"), ("jira_reason", "VARCHAR(500)"), ("module", "VARCHAR(255) DEFAULT 'General'"), ("is_grouped", "BOOLEAN DEFAULT FALSE"), ("dismissed", "BOOLEAN DEFAULT FALSE")]:
+        try:
+            cursor.execute(f"ALTER TABLE tasks ADD COLUMN {col} {definition}")
+        except mysql.connector.errors.ProgrammingError:
+            pass
     conn.commit()
     cursor.close()
     conn.close()

@@ -56,9 +56,12 @@ def save_tasks(meeting_id: int, tasks_list: list[dict]) -> list[int]:
     cursor = conn.cursor()
     task_ids = []
     for task in tasks_list:
+        desc = task.get("description", "")
+        if isinstance(desc, list):
+            desc = "\n".join(f"- {item}" if not str(item).startswith("- ") else str(item) for item in desc)
         cursor.execute(
-            "INSERT INTO tasks (meeting_id, title, description, assignee) VALUES (%s, %s, %s, %s)",
-            (meeting_id, task.get("title", ""), task.get("description", ""), task.get("assignee")),
+            "INSERT INTO tasks (meeting_id, title, description, assignee, jira_worthy, jira_reason, module, is_grouped) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (meeting_id, str(task.get("title", "")), str(desc), task.get("assignee"), task.get("jira_worthy", True), str(task.get("jira_reason", "")), str(task.get("module", "General")), task.get("is_grouped", False)),
         )
         task_ids.append(cursor.lastrowid)
     conn.commit()
@@ -71,7 +74,7 @@ def get_tasks(meeting_id: int) -> list[dict]:
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute(
-        "SELECT id, title, description, assignee, jira_ticket_id FROM tasks WHERE meeting_id = %s",
+        "SELECT id, title, description, assignee, jira_ticket_id, jira_worthy, jira_reason, module, is_grouped, dismissed FROM tasks WHERE meeting_id = %s",
         (meeting_id,),
     )
     rows = cursor.fetchall()
@@ -98,6 +101,24 @@ def update_task(task_id: int, title: str | None = None, description: str | None 
         values.append(task_id)
         cursor.execute(f"UPDATE tasks SET {', '.join(updates)} WHERE id = %s", values)
         conn.commit()
+    cursor.close()
+    conn.close()
+
+
+def dismiss_task(task_id: int):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE tasks SET dismissed = TRUE WHERE id = %s", (task_id,))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+def delete_tasks(meeting_id: int):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM tasks WHERE meeting_id = %s", (meeting_id,))
+    conn.commit()
     cursor.close()
     conn.close()
 

@@ -1,12 +1,9 @@
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from google import genai
-from google.genai import types
 from dotenv import load_dotenv
+from backend.models.llm import generate, generate_with_file
 
 load_dotenv()
-
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 SYSTEM_INSTRUCTION = """You are an expert transcriptionist specializing in Hinglish (Hindi + English) technical conversations.
 You accurately capture technical terms and internal jargon without autocorrecting them.
@@ -56,27 +53,9 @@ def _build_prompt(offset_minutes: int = 0, context: str = "") -> str:
     return prompt
 
 
-def _get_config() -> types.GenerateContentConfig:
-    return types.GenerateContentConfig(
-        system_instruction=SYSTEM_INSTRUCTION,
-        temperature=0.1,
-        top_p=0.1,
-        response_mime_type="text/plain",
-    )
-
-
 def transcribe_chunk(audio_path: str, chunk_index: int = 0, offset_minutes: int = 0, context: str = "") -> str:
-    uploaded_file = client.files.upload(file=audio_path)
-
     prompt = _build_prompt(offset_minutes=offset_minutes, context=context)
-    config = _get_config()
-
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=[prompt, uploaded_file],
-        config=config,
-    )
-    return response.text
+    return generate_with_file(prompt, audio_path, system_instruction=SYSTEM_INSTRUCTION)
 
 
 def refine_transcript(transcript: str) -> str:
@@ -85,20 +64,7 @@ def refine_transcript(transcript: str) -> str:
         return transcript
 
     prompt = REFINEMENT_PROMPT + f"Glossary keywords:\n{glossary_terms}\n\nTranscription to review:\n{transcript}"
-
-    config = types.GenerateContentConfig(
-        system_instruction=SYSTEM_INSTRUCTION,
-        temperature=0.0,
-        top_p=0.1,
-        response_mime_type="text/plain",
-    )
-
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt,
-        config=config,
-    )
-    return response.text
+    return generate(prompt, system_instruction=SYSTEM_INSTRUCTION, temperature=0.0)
 
 
 def transcribe_meeting(chunk_paths: list[str], chunk_minutes: int = 10, context: str = "") -> str:
@@ -115,7 +81,5 @@ def transcribe_meeting(chunk_paths: list[str], chunk_minutes: int = 10, context:
             results[idx] = future.result()
 
     merged = "\n\n".join(r for r in results if r)
-
     refined = refine_transcript(merged)
-
     return refined

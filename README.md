@@ -1,20 +1,20 @@
 # AI Meeting Assistant MVP
 
-Processes long meeting recordings (up to ~3 hours), generates structured transcripts in romanized Hinglish, extracts actionable tasks, and creates Jira tickets.
+Processes long meeting recordings (up to ~3 hours), generates structured transcripts in romanized Hinglish, extracts actionable tasks grouped by module, and creates Jira tickets.
 
 ## Tech Stack
 
 - **Backend:** FastAPI
 - **Frontend:** Streamlit
-- **LLM:** Gemini 2.5 Flash
-- **Audio:** pydub + ffmpeg
+- **LLM:** Gemini 2.5 Flash (transcription, task extraction, Jira suggestion)
+- **Audio:** pydub + ffmpeg (chunking, noise gate, 16kHz normalization)
 - **Database:** MySQL
 - **Integration:** Jira REST API
 
 ## Prerequisites
 
 - Python 3.12+
-- MySQL 
+- MySQL
 - ffmpeg
 
 ## Setup
@@ -51,7 +51,10 @@ JIRA_BASE_URL=https://your-domain.atlassian.net
 JIRA_EMAIL=your_email
 JIRA_API_TOKEN=your_jira_api_token
 JIRA_PROJECT_KEY=your_project_key
-TRANSCRIPTION_EXTRA_PROMPT=help the llm understand your business.
+
+# Transcription tuning
+TRANSCRIPTION_EXTRA_PROMPT="Describe your meeting context here to help the LLM."
+TRANSCRIPTION_GLOSSARY=Term1, Term2, Term3
 ```
 
 ### 4. Create the database
@@ -86,10 +89,22 @@ Frontend runs at `http://localhost:8501`.
 
 1. Open the Streamlit UI
 2. Upload a meeting audio file (mp3, wav, m4a, ogg, flac, webm)
-3. Optionally add context (agenda, notes)
-4. Click **Process Meeting** — audio is chunked, transcribed, and tasks are extracted
-5. Edit the transcript and tasks as needed
-6. Click **Create Jira Ticket** on any task to push it to Jira
+3. Optionally add context (agenda, speaker names, notes)
+4. Click **Process Meeting** — audio is chunked, transcribed, tasks are extracted and grouped by module
+5. Edit the transcript — saving re-extracts tasks automatically
+6. Review suggested Jira tickets, edit title/description/assignee as needed
+7. **Dismiss** tasks you don't want to track
+8. Click **Create Jira Ticket** to push to Jira
+
+## Features
+
+- **Expert transcription** — System instruction persona with low temperature for accuracy
+- **Glossary support** — Domain terms via `TRANSCRIPTION_GLOSSARY` env var to fix phonetic errors
+- **Multi-pass refinement** — Second LLM pass corrects technical term misspellings
+- **Audio pre-processing** — 16kHz mono normalization + noise gate before transcription
+- **Smart Jira suggestions** — LLM groups related tasks by module, drops trivial items
+- **Transcript sync** — Editing transcript re-runs task extraction and Jira suggestions
+- **Dismiss tasks** — Soft-delete tasks you don't need; shown grayed out in UI
 
 ## API Endpoints
 
@@ -97,7 +112,30 @@ Frontend runs at `http://localhost:8501`.
 |--------|----------|-------------|
 | POST | `/process-meeting` | Upload and process meeting audio |
 | GET | `/meeting/{id}` | Get transcript and tasks |
-| PUT | `/meeting/{id}/transcript` | Update transcript |
+| PUT | `/meeting/{id}/transcript` | Update transcript (re-extracts tasks) |
 | PUT | `/task/{id}` | Update a task |
+| DELETE | `/task/{id}` | Dismiss a task |
 | POST | `/create-jira` | Create a Jira ticket from a task |
 
+## Project Structure
+
+```
+mvp/
+├── backend/
+│   ├── main.py                  # FastAPI app
+│   ├── models/
+│   │   └── llm.py               # Shared Gemini client
+│   └── services/
+│       ├── chunking.py          # Audio splitting + pre-processing
+│       ├── transcription.py     # Gemini transcription + refinement
+│       ├── task_extractor.py    # Task extraction from transcript
+│       ├── jira_evaluator.py    # LLM-based Jira ticket suggestions
+│       └── jira.py              # Jira REST API
+├── frontend/
+│   └── app.py                   # Streamlit UI
+├── storage/
+│   ├── models.py                # MySQL schema
+│   └── db.py                    # CRUD operations
+├── requirements.txt
+└── .env
+```

@@ -7,11 +7,12 @@ from pydantic import BaseModel
 from storage.models import create_tables
 from storage.db import (
     save_meeting, save_transcript, get_transcript, update_transcript,
-    save_tasks, get_tasks, update_task, set_jira_ticket_id,
+    save_tasks, get_tasks, update_task, set_jira_ticket_id, delete_tasks, dismiss_task,
 )
 from backend.services.chunking import split_audio
 from backend.services.transcription import transcribe_meeting
 from backend.services.task_extractor import extract_tasks
+from backend.services.jira_evaluator import suggest_jira_tickets
 from backend.services.jira import create_jira_ticket
 
 app = FastAPI(title="AI Meeting Assistant MVP")
@@ -32,41 +33,34 @@ def startup():
     create_tables()
 
 
+def _extract_and_suggest(transcript: str, meeting_id: int) -> list[dict]:
+    raw_tasks = extract_tasks(transcript)
+    suggestions = suggest_jira_tickets(raw_tasks)
+    task_ids = save_tasks(meeting_id, suggestions)
+    for i, tid in enumerate(task_ids):
+        suggestions[i]["id"] = tid
+    return suggestions
+
+
 @app.post("/process-meeting")
 async def process_meeting(
     audio: UploadFile = File(...),
     context: str = Form(default=""),
 ):
-    """Process a meeting audio file: transcribe and extract tasks."""
-    # Save uploaded file
     file_path = os.path.join(UPLOAD_DIR, audio.filename)
     with open(file_path, "wb") as f:
         shutil.copyfileobj(audio.file, f)
 
-    # Save meeting record
     meeting_id = save_meeting(audio.filename)
 
-    # Split audio into chunks
     chunk_dir = os.path.join(UPLOAD_DIR, f"meeting_{meeting_id}")
     chunks = split_audio(file_path, chunk_minutes=10, output_dir=chunk_dir)
 
-    # Transcribe all chunks
     transcript = transcribe_meeting(chunks, context=context)
-
-    # Save transcript
     save_transcript(meeting_id, transcript)
 
-    # Extract tasks
-    tasks = extract_tasks(transcript)
+    tasks = _extract_and_suggest(transcript, meeting_id)
 
-    # Save tasks
-    task_ids = save_tasks(meeting_id, tasks)
-
-    # Attach IDs to task dicts
-    for i, tid in enumerate(task_ids):
-        tasks[i]["id"] = tid
-
-    # Clean up chunks (keep original upload)
     shutil.rmtree(chunk_dir, ignore_errors=True)
 
     return {
@@ -78,7 +72,6 @@ async def process_meeting(
 
 @app.get("/meeting/{meeting_id}")
 def get_meeting(meeting_id: int):
-    """Get transcript and tasks for a meeting."""
     transcript = get_transcript(meeting_id)
     if transcript is None:
         raise HTTPException(status_code=404, detail="Meeting not found")
@@ -96,22 +89,31 @@ class TranscriptUpdate(BaseModel):
 
 @app.put("/meeting/{meeting_id}/transcript")
 def update_meeting_transcript(meeting_id: int, body: TranscriptUpdate):
-    """Update the transcript for a meeting."""
     update_transcript(meeting_id, body.content)
-    return {"status": "updated"}
+
+    # Re-extract tasks from updated transcript
+    delete_tasks(meeting_id)
+    tasks = _extract_and_suggest(body.content, meeting_id)
+
+    return {"status": "updated", "tasks": tasks}
 
 
-class TaskUpdate(BaseModel):
+class TaskUpdateBody(BaseModel):
     title: str | None = None
     description: str | None = None
     assignee: str | None = None
 
 
 @app.put("/task/{task_id}")
-def update_task_endpoint(task_id: int, body: TaskUpdate):
-    """Update a task's fields."""
+def update_task_endpoint(task_id: int, body: TaskUpdateBody):
     update_task(task_id, title=body.title, description=body.description, assignee=body.assignee)
     return {"status": "updated"}
+
+
+@app.delete("/task/{task_id}")
+def dismiss_task_endpoint(task_id: int):
+    dismiss_task(task_id)
+    return {"status": "dismissed"}
 
 
 class JiraCreate(BaseModel):
@@ -123,7 +125,6 @@ class JiraCreate(BaseModel):
 
 @app.post("/create-jira")
 def create_jira(body: JiraCreate):
-    """Create a Jira ticket for a task."""
     result = create_jira_ticket(body.title, body.description, body.assignee)
     set_jira_ticket_id(body.task_id, result["ticket_id"])
     return result

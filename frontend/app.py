@@ -58,76 +58,123 @@ if "transcript" in st.session_state:
         key="transcript_editor",
     )
     if st.button("Save Transcript Changes"):
-        try:
-            resp = requests.put(
-                f"{API_BASE}/meeting/{st.session_state['meeting_id']}/transcript",
-                json={"content": edited_transcript},
-                timeout=30,
-            )
-            resp.raise_for_status()
-            st.session_state["transcript"] = edited_transcript
-            st.success("Transcript saved!")
-        except requests.exceptions.RequestException as e:
-            st.error(f"Error saving transcript: {e}")
+        with st.spinner("Saving transcript and re-extracting tasks..."):
+            try:
+                resp = requests.put(
+                    f"{API_BASE}/meeting/{st.session_state['meeting_id']}/transcript",
+                    json={"content": edited_transcript},
+                    timeout=300,
+                )
+                resp.raise_for_status()
+                result = resp.json()
+                st.session_state["transcript"] = edited_transcript
+                st.session_state["tasks"] = result["tasks"]
+                st.success("Transcript saved! Tasks re-extracted.")
+            except requests.exceptions.RequestException as e:
+                st.error(f"Error saving transcript: {e}")
+
+
+# --- Callbacks ---
+def _save_task_callback(idx):
+    task = st.session_state["tasks"][idx]
+    title = st.session_state.get(f"title_{idx}", task.get("title", ""))
+    desc = st.session_state.get(f"desc_{idx}", task.get("description", ""))
+    assignee = st.session_state.get(f"assignee_{idx}", task.get("assignee", ""))
+    try:
+        resp = requests.put(
+            f"{API_BASE}/task/{task['id']}",
+            json={"title": title, "description": desc, "assignee": assignee or None},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        st.session_state["tasks"][idx]["title"] = title
+        st.session_state["tasks"][idx]["description"] = desc
+        st.session_state["tasks"][idx]["assignee"] = assignee
+        st.session_state[f"msg_{idx}"] = ("success", "Task updated!")
+    except requests.exceptions.RequestException as e:
+        st.session_state[f"msg_{idx}"] = ("error", f"Error: {e}")
+
+
+def _create_jira_callback(idx):
+    task = st.session_state["tasks"][idx]
+    title = st.session_state.get(f"title_{idx}", task.get("title", ""))
+    desc = st.session_state.get(f"desc_{idx}", task.get("description", ""))
+    assignee = st.session_state.get(f"assignee_{idx}", task.get("assignee", ""))
+    try:
+        resp = requests.post(
+            f"{API_BASE}/create-jira",
+            json={"task_id": task["id"], "title": title, "description": desc, "assignee": assignee or None},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        result = resp.json()
+        st.session_state["tasks"][idx]["jira_ticket_id"] = result["ticket_id"]
+        st.session_state[f"msg_{idx}"] = ("success", f"Created: {result['ticket_id']} - {result['url']}")
+    except requests.exceptions.RequestException as e:
+        st.session_state[f"msg_{idx}"] = ("error", f"Error creating Jira ticket: {e}")
+
+
+def _dismiss_task_callback(idx):
+    task = st.session_state["tasks"][idx]
+    try:
+        resp = requests.delete(f"{API_BASE}/task/{task['id']}", timeout=30)
+        resp.raise_for_status()
+        st.session_state["tasks"][idx]["dismissed"] = True
+        st.session_state[f"msg_{idx}"] = ("success", "Task dismissed")
+    except requests.exceptions.RequestException as e:
+        st.session_state[f"msg_{idx}"] = ("error", f"Error: {e}")
+
 
 # --- Tasks Section ---
 if "tasks" in st.session_state:
     st.divider()
-    st.header("Extracted Tasks")
+    st.header("Suggested Jira Tickets")
 
     for i, task in enumerate(st.session_state["tasks"]):
-        with st.expander(f"Task {i + 1}: {task.get('title', 'Untitled')}", expanded=True):
-            col1, col2 = st.columns([3, 1])
+        module = task.get("module", "General")
+        dismissed = task.get("dismissed", False)
 
-            with col1:
-                new_title = st.text_input("Title", value=task.get("title", ""), key=f"title_{i}")
-                new_desc = st.text_area("Description", value=task.get("description", ""), key=f"desc_{i}", height=100)
-                new_assignee = st.text_input("Assignee", value=task.get("assignee", "") or "", key=f"assignee_{i}")
+        label = f"{task.get('title', 'Untitled')} [{module}]"
+        if dismissed:
+            label = f"{label} — Dismissed"
 
-            with col2:
-                st.write("")
-                st.write("")
+        with st.expander(label, expanded=not dismissed):
+            if dismissed:
+                st.markdown(
+                    f"<div style='color: #888; background: #f5f5f5; padding: 12px; border-radius: 8px; border-left: 4px solid #ccc;'>"
+                    f"<div style='font-size: 15px; font-weight: 600; margin-bottom: 6px;'>{task.get('title', '')}</div>"
+                    f"<div style='font-size: 13px; white-space: pre-wrap; margin-bottom: 6px;'>{task.get('description', '')}</div>"
+                    f"<div style='font-size: 12px;'>Assignee: {task.get('assignee') or 'Unassigned'}</div>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                col1, col2 = st.columns([3, 1])
 
-                # Save task changes
-                if st.button("Save Changes", key=f"save_{i}"):
-                    try:
-                        resp = requests.put(
-                            f"{API_BASE}/task/{task['id']}",
-                            json={
-                                "title": new_title,
-                                "description": new_desc,
-                                "assignee": new_assignee or None,
-                            },
-                            timeout=30,
-                        )
-                        resp.raise_for_status()
-                        st.session_state["tasks"][i]["title"] = new_title
-                        st.session_state["tasks"][i]["description"] = new_desc
-                        st.session_state["tasks"][i]["assignee"] = new_assignee
-                        st.success("Task updated!")
-                    except requests.exceptions.RequestException as e:
-                        st.error(f"Error: {e}")
+                with col1:
+                    st.text_input("Title", value=task.get("title", ""), key=f"title_{i}")
+                    st.text_area("Description", value=task.get("description", ""), key=f"desc_{i}", height=150)
+                    st.text_input("Assignee", value=task.get("assignee", "") or "", key=f"assignee_{i}")
 
-                # Create Jira ticket
-                jira_id = task.get("jira_ticket_id")
-                if jira_id:
-                    st.info(f"Jira: {jira_id}")
+                with col2:
+                    st.write("")
+                    st.write("")
+
+                    st.button("Save Changes", key=f"save_{i}", on_click=_save_task_callback, args=(i,))
+
+                    jira_id = task.get("jira_ticket_id")
+                    if jira_id:
+                        st.info(f"Jira: {jira_id}")
+                    else:
+                        st.button("Create Jira Ticket", key=f"jira_{i}", on_click=_create_jira_callback, args=(i,))
+
+                    st.button("Dismiss", key=f"dismiss_{i}", on_click=_dismiss_task_callback, args=(i,))
+
+            msg_key = f"msg_{i}"
+            if msg_key in st.session_state:
+                msg_type, msg_text = st.session_state[msg_key]
+                if msg_type == "success":
+                    st.success(msg_text)
                 else:
-                    if st.button("Create Jira Ticket", key=f"jira_{i}"):
-                        try:
-                            resp = requests.post(
-                                f"{API_BASE}/create-jira",
-                                json={
-                                    "task_id": task["id"],
-                                    "title": new_title,
-                                    "description": new_desc,
-                                    "assignee": new_assignee or None,
-                                },
-                                timeout=30,
-                            )
-                            resp.raise_for_status()
-                            result = resp.json()
-                            st.session_state["tasks"][i]["jira_ticket_id"] = result["ticket_id"]
-                            st.success(f"Created: {result['ticket_id']} - {result['url']}")
-                        except requests.exceptions.RequestException as e:
-                            st.error(f"Error creating Jira ticket: {e}")
+                    st.error(msg_text)
+                del st.session_state[msg_key]
