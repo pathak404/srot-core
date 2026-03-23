@@ -1,0 +1,11 @@
+fastapi==0.115.0
+uvicorn==0.30.6
+python-multipart==0.0.9
+pydub==0.25.1
+static-ffmpeg==3.0
+google-genai==1.14.0
+mysql-connector-python==9.0.0
+python-dotenv==1.0.1
+requests==2.32.3
+streamlit==1.38.0
+pytest==8.3.3
