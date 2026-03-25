@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 from storage.models import create_tables
 from storage.db import (
-    save_meeting, save_transcript, get_transcript, update_transcript,
+    get_all_meetings, get_meeting, save_meeting, save_transcript, get_transcript, update_transcript,
     save_tasks, get_tasks, update_task, set_jira_ticket_id, delete_tasks, dismiss_task,
 )
 from backend.services.chunking import split_audio
@@ -55,13 +55,15 @@ def _extract_and_suggest(transcript: str, meeting_id: int) -> list[dict]:
 @app.post("/process-meeting")
 async def process_meeting(
     audio: UploadFile = File(...),
+    title: str = Form(default=""),
     context: str = Form(default=""),
 ):
     file_path = os.path.join(UPLOAD_DIR, audio.filename)
     with open(file_path, "wb") as f:
         shutil.copyfileobj(audio.file, f)
 
-    meeting_id = save_meeting(audio.filename)
+    meeting_title = title.strip() or audio.filename
+    meeting_id = save_meeting(audio.filename, meeting_title)
 
     chunk_dir = os.path.join(UPLOAD_DIR, f"meeting_{meeting_id}")
     chunks = split_audio(file_path, chunk_minutes=10, output_dir=chunk_dir)
@@ -77,15 +79,23 @@ async def process_meeting(
     }
 
 
+@app.get("/meetings")
+def list_meetings():
+    return get_all_meetings()
+
+
 @app.get("/meeting/{meeting_id}")
-def get_meeting(meeting_id: int):
-    transcript = get_transcript(meeting_id)
-    if transcript is None:
+def get_meeting_endpoint(meeting_id: int):
+    meeting = get_meeting(meeting_id)
+    if meeting is None:
         raise HTTPException(status_code=404, detail="Meeting not found")
+    transcript = get_transcript(meeting_id)
     tasks = get_tasks(meeting_id)
     return {
         "meeting_id": meeting_id,
-        "transcript": transcript,
+        "title": meeting.get("title") or meeting.get("filename", ""),
+        "filename": meeting.get("filename", ""),
+        "transcript": transcript or "",
         "tasks": tasks,
     }
 

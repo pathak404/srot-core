@@ -1,10 +1,34 @@
 from storage.models import get_connection
 
 
-def save_meeting(filename: str) -> int:
+def get_all_meetings() -> list[dict]:
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        "SELECT m.id, m.title, m.filename, m.created_at, "
+        "(SELECT COUNT(*) FROM tasks t WHERE t.meeting_id = m.id AND t.dismissed = FALSE) as task_count "
+        "FROM meetings m ORDER BY m.created_at DESC"
+    )
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return rows
+
+
+def get_meeting(meeting_id: int) -> dict | None:
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT id, title, filename, created_at FROM meetings WHERE id = %s", (meeting_id,))
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return row
+
+
+def save_meeting(filename: str, title: str = "") -> int:
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("INSERT INTO meetings (filename) VALUES (%s)", (filename,))
+    cursor.execute("INSERT INTO meetings (title, filename) VALUES (%s, %s)", (title, filename))
     conn.commit()
     meeting_id = cursor.lastrowid
     cursor.close()
