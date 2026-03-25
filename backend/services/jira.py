@@ -10,6 +10,10 @@ JIRA_API_TOKEN = os.getenv("JIRA_API_TOKEN", "")
 JIRA_PROJECT_KEY = os.getenv("JIRA_PROJECT_KEY", "ENG")
 
 
+def is_jira_configured() -> bool:
+    return bool(JIRA_BASE_URL and JIRA_EMAIL and JIRA_API_TOKEN)
+
+
 def create_jira_ticket(title: str, description: str, assignee: str | None = None) -> dict:
     """Create a Jira ticket using the REST API."""
     if not JIRA_BASE_URL or not JIRA_EMAIL or not JIRA_API_TOKEN:

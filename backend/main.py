@@ -13,7 +13,7 @@ from backend.services.chunking import split_audio
 from backend.services.transcription import transcribe_meeting
 from backend.services.task_extractor import extract_tasks
 from backend.services.jira_evaluator import suggest_jira_tickets
-from backend.services.jira import create_jira_ticket
+from backend.services.jira import create_jira_ticket, is_jira_configured
 
 app = FastAPI(title="AI Meeting Assistant MVP")
 
@@ -33,9 +33,19 @@ def startup():
     create_tables()
 
 
+@app.get("/config")
+def get_config():
+    return {"jira_enabled": is_jira_configured()}
+
+
 def _extract_and_suggest(transcript: str, meeting_id: int) -> list[dict]:
     raw_tasks = extract_tasks(transcript)
-    suggestions = suggest_jira_tickets(raw_tasks)
+
+    if is_jira_configured():
+        suggestions = suggest_jira_tickets(raw_tasks)
+    else:
+        suggestions = raw_tasks
+
     task_ids = save_tasks(meeting_id, suggestions)
     for i, tid in enumerate(task_ids):
         suggestions[i]["id"] = tid
@@ -59,14 +69,11 @@ async def process_meeting(
     transcript = transcribe_meeting(chunks, context=context)
     save_transcript(meeting_id, transcript)
 
-    tasks = _extract_and_suggest(transcript, meeting_id)
-
     shutil.rmtree(chunk_dir, ignore_errors=True)
 
     return {
         "meeting_id": meeting_id,
         "transcript": transcript,
-        "tasks": tasks,
     }
 
 
@@ -91,7 +98,6 @@ class TranscriptUpdate(BaseModel):
 def update_meeting_transcript(meeting_id: int, body: TranscriptUpdate):
     update_transcript(meeting_id, body.content)
 
-    # Re-extract tasks from updated transcript
     delete_tasks(meeting_id)
     tasks = _extract_and_suggest(body.content, meeting_id)
 

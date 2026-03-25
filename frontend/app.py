@@ -6,7 +6,20 @@ API_BASE = "http://localhost:8000"
 st.set_page_config(page_title="AI Meeting Assistant", layout="wide")
 st.title("AI Meeting Assistant")
 
-# --- Upload Section ---
+# Fetch config  
+@st.cache_data(ttl=60)
+def _get_config():
+    try:
+        resp = requests.get(f"{API_BASE}/config", timeout=5)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception:
+        return {"jira_enabled": False}
+
+config = _get_config()
+jira_enabled = config.get("jira_enabled", False)
+
+# Upload Section
 st.header("Upload Meeting Audio")
 
 audio_file = st.file_uploader("Choose an audio file", type=["mp3", "wav", "m4a", "ogg", "flac", "webm"])
@@ -22,12 +35,12 @@ if st.button("Process Meeting", disabled=audio_file is None):
             result = resp.json()
             st.session_state["meeting_id"] = result["meeting_id"]
             st.session_state["transcript"] = result["transcript"]
-            st.session_state["tasks"] = result["tasks"]
-            st.success(f"Meeting processed! Meeting ID: {result['meeting_id']}")
+            st.session_state.pop("tasks", None)
+            st.success(f"Meeting processed! Review the transcript below and click Save to extract tasks.")
         except requests.exceptions.RequestException as e:
             st.error(f"Error processing meeting: {e}")
 
-# --- Load existing meeting ---
+# Load existing meeting
 st.divider()
 col_load1, col_load2 = st.columns([1, 3])
 with col_load1:
@@ -47,7 +60,7 @@ with col_load2:
         except requests.exceptions.RequestException as e:
             st.error(f"Error loading meeting: {e}")
 
-# --- Transcript Section ---
+# Transcript Section
 if "transcript" in st.session_state:
     st.divider()
     st.header("Transcript")
@@ -57,8 +70,8 @@ if "transcript" in st.session_state:
         height=400,
         key="transcript_editor",
     )
-    if st.button("Save Transcript Changes"):
-        with st.spinner("Saving transcript and re-extracting tasks..."):
+    if st.button("Save & Extract Tasks"):
+        with st.spinner("Saving transcript and extracting tasks..."):
             try:
                 resp = requests.put(
                     f"{API_BASE}/meeting/{st.session_state['meeting_id']}/transcript",
@@ -69,12 +82,12 @@ if "transcript" in st.session_state:
                 result = resp.json()
                 st.session_state["transcript"] = edited_transcript
                 st.session_state["tasks"] = result["tasks"]
-                st.success("Transcript saved! Tasks re-extracted.")
+                st.success("Transcript saved! Tasks extracted.")
             except requests.exceptions.RequestException as e:
                 st.error(f"Error saving transcript: {e}")
 
 
-# --- Callbacks ---
+
 def _save_task_callback(idx):
     task = st.session_state["tasks"][idx]
     title = st.session_state.get(f"title_{idx}", task.get("title", ""))
@@ -125,16 +138,18 @@ def _dismiss_task_callback(idx):
         st.session_state[f"msg_{idx}"] = ("error", f"Error: {e}")
 
 
-# --- Tasks Section ---
-if "tasks" in st.session_state:
+# Tasks Section
+if "tasks" in st.session_state and st.session_state["tasks"]:
     st.divider()
-    st.header("Suggested Jira Tickets")
+    st.header("Extracted Tasks")
 
     for i, task in enumerate(st.session_state["tasks"]):
-        module = task.get("module", "General")
+        module = task.get("module", "")
         dismissed = task.get("dismissed", False)
 
-        label = f"{task.get('title', 'Untitled')} [{module}]"
+        label = task.get("title", "Untitled")
+        if module:
+            label = f"{label} [{module}]"
         if dismissed:
             label = f"{label} — Dismissed"
 
@@ -162,11 +177,12 @@ if "tasks" in st.session_state:
 
                     st.button("Save Changes", key=f"save_{i}", on_click=_save_task_callback, args=(i,))
 
-                    jira_id = task.get("jira_ticket_id")
-                    if jira_id:
-                        st.info(f"Jira: {jira_id}")
-                    else:
-                        st.button("Create Jira Ticket", key=f"jira_{i}", on_click=_create_jira_callback, args=(i,))
+                    if jira_enabled:
+                        jira_id = task.get("jira_ticket_id")
+                        if jira_id:
+                            st.info(f"Jira: {jira_id}")
+                        else:
+                            st.button("Create Jira Ticket", key=f"jira_{i}", on_click=_create_jira_callback, args=(i,))
 
                     st.button("Dismiss", key=f"dismiss_{i}", on_click=_dismiss_task_callback, args=(i,))
 
