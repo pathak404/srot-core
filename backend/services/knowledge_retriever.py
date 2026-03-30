@@ -75,6 +75,24 @@ def _format_graph_results(graph_results: list[dict]) -> tuple[list[str], list[st
     return enum_lines, service_lines, function_lines
 
 
+def get_projects_for_tasks(tasks: list[dict]) -> list[str]:
+    if not graph_store.is_available() or not tasks:
+        return []
+    terms = _extract_terms(tasks)
+    try:
+        results = graph_store.query_context(terms, project_name=None)
+    except Exception:
+        return []
+    seen: set[str] = set()
+    projects: list[str] = []
+    for r in results:
+        p = r.get("project")
+        if p and p not in seen:
+            seen.add(p)
+            projects.append(p)
+    return projects
+
+
 def get_jira_context(tasks: list[dict], project_name: str | None = None) -> str:
 
     if not tasks:

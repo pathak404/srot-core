@@ -13,6 +13,7 @@ from storage.db import (
     get_all_code_entities, save_code_entity, delete_code_entity,
     create_index_job, update_index_job, get_index_jobs, get_index_job, get_latest_job_by_path,
     get_domain_entities, save_domain_entity, delete_domain_entity, get_domain_entity,
+    get_task, get_task_by_jira_id,
 )
 from backend.services.chunking import split_audio
 from backend.services.transcription import transcribe_meeting
@@ -112,11 +113,17 @@ class TranscriptUpdate(BaseModel):
 
 
 @app.put("/meeting/{meeting_id}/transcript")
-def update_meeting_transcript(meeting_id: int, body: TranscriptUpdate):
+def update_meeting_transcript(meeting_id: int, body: TranscriptUpdate, background_tasks: BackgroundTasks):
     update_transcript(meeting_id, body.content)
 
     delete_tasks(meeting_id)
     tasks = _extract_and_suggest(body.content, meeting_id)
+
+    from backend.services.dev_layer import generate_and_save
+    for seq, task in enumerate(tasks, start=1):
+        if task.get("id"):
+            task["task_seq"] = seq
+            background_tasks.add_task(generate_and_save, task.copy(), meeting_id)
 
     return {"status": "updated", "tasks": tasks}
 
@@ -147,10 +154,45 @@ class JiraCreate(BaseModel):
 
 
 @app.post("/create-jira")
-def create_jira(body: JiraCreate):
+def create_jira(body: JiraCreate, background_tasks: BackgroundTasks):
     result = create_jira_ticket(body.title, body.description, body.assignee)
     set_jira_ticket_id(body.task_id, result["ticket_id"])
+
+    task = get_task(body.task_id)
+    if task:
+        task["jira_ticket_id"] = result["ticket_id"]
+        task["title"] = body.title
+        task["description"] = body.description
+        task["assignee"] = body.assignee
+        # resolve task_seq
+        all_tasks = get_tasks(task["meeting_id"])
+        task["task_seq"] = next((t["task_seq"] for t in all_tasks if t["id"] == body.task_id), None)
+        from backend.services.dev_layer import generate_and_save
+        background_tasks.add_task(generate_and_save, task, task["meeting_id"])
+
     return result
+
+
+@app.get("/dev-task")
+def get_dev_task(meeting: int | None = None, task: int | None = None, jira: str | None = None):
+    from backend.services.dev_layer import read_dev_task_file
+    if jira:
+        row = get_task_by_jira_id(jira)
+        if not row:
+            raise HTTPException(status_code=404, detail="No task found for that Jira ticket ID")
+        meeting_id = row["meeting_id"]
+        # Compute task_seq: position of this task among the meeting's tasks ordered by id
+        all_tasks = get_tasks(meeting_id)
+        task_seq = next((t["task_seq"] for t in all_tasks if t["id"] == row["id"]), None)
+        if task_seq is None:
+            raise HTTPException(status_code=404, detail="Dev task file not found")
+        meeting, task = meeting_id, task_seq
+    if meeting is None or task is None:
+        raise HTTPException(status_code=400, detail="Provide meeting+task params or jira param")
+    content = read_dev_task_file(meeting, task)
+    if content is None:
+        raise HTTPException(status_code=404, detail="Dev task file not found")
+    return {"meeting_id": meeting, "task_seq": task, "content": content}
 
 
 
@@ -233,7 +275,7 @@ async def live_transcribe(websocket: WebSocket, meeting_id: int):
 
 
 @app.post("/finalize-meeting/{meeting_id}")
-def finalize_meeting(meeting_id: int):
+def finalize_meeting(meeting_id: int, background_tasks: BackgroundTasks):
     transcript = get_transcript(meeting_id)
     if not transcript:
         raise HTTPException(status_code=404, detail="No transcript found")
@@ -244,6 +286,12 @@ def finalize_meeting(meeting_id: int):
     update_meeting_status(meeting_id, "completed")
 
     tasks = _extract_and_suggest(refined, meeting_id)
+
+    from backend.services.dev_layer import generate_and_save
+    for seq, task in enumerate(tasks, start=1):
+        if task.get("id"):
+            task["task_seq"] = seq
+            background_tasks.add_task(generate_and_save, task.copy(), meeting_id)
 
     return {"status": "finalized", "meeting_id": meeting_id, "tasks": tasks}
 

@@ -315,13 +315,14 @@ def query_context(terms: list[str], project_name: str | None = None) -> list[dic
             {project_filter}
             OPTIONAL MATCH (en)-[:BELONGS_TO]->(s:Service)
             RETURN en.name AS name, en.values_json AS values_json,
-                   en.file_path AS file_path, s.name AS service
+                   en.file_path AS file_path, en.project AS project, s.name AS service
             LIMIT 10
         """
         for record in session.run(q, terms=terms, project=project_name):
             results.append({
                 "entity_type": "enum",
                 "name": record["name"],
+                "project": record["project"],
                 "service": record["service"],
                 "values_json": record["values_json"],
                 "file_path": record["file_path"],
@@ -332,13 +333,14 @@ def query_context(terms: list[str], project_name: str | None = None) -> list[dic
             MATCH (s:Service)
             WHERE any(term IN $terms WHERE toLower(s.name) CONTAINS toLower(term))
             {svc_filter}
-            RETURN s.name AS name, s.file_path AS file_path, s.entity_type AS entity_type
+            RETURN s.name AS name, s.file_path AS file_path, s.entity_type AS entity_type, s.project AS project
             LIMIT 5
         """
         for record in session.run(q2, terms=terms, project=project_name):
             results.append({
                 "entity_type": "service",
                 "name": record["name"],
+                "project": record["project"],
                 "service": None,
                 "values_json": None,
                 "file_path": record["file_path"],
@@ -351,7 +353,7 @@ def query_context(terms: list[str], project_name: str | None = None) -> list[dic
             {fn_filter}
             OPTIONAL MATCH (f)-[:DEFINED_IN]->(s:Service)
             RETURN f.name AS name, f.params AS params, f.return_type AS return_type,
-                   f.file_path AS file_path, s.name AS service
+                   f.file_path AS file_path, f.project AS project, s.name AS service
             LIMIT 10
         """
         for record in session.run(q3, terms=terms, project=project_name):
@@ -360,6 +362,7 @@ def query_context(terms: list[str], project_name: str | None = None) -> list[dic
                 "name": record["name"],
                 "params": record["params"],
                 "return_type": record["return_type"],
+                "project": record["project"],
                 "service": record["service"],
                 "values_json": None,
                 "file_path": record["file_path"],

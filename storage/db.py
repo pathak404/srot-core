@@ -108,12 +108,14 @@ def get_tasks(meeting_id: int) -> list[dict]:
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute(
-        "SELECT id, title, description, assignee, jira_ticket_id, jira_worthy, jira_reason, module, is_grouped, dismissed FROM tasks WHERE meeting_id = %s",
+        "SELECT id, title, description, assignee, jira_ticket_id, jira_worthy, jira_reason, module, is_grouped, dismissed FROM tasks WHERE meeting_id = %s ORDER BY id",
         (meeting_id,),
     )
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
+    for seq, row in enumerate(rows, start=1):
+        row["task_seq"] = seq
     return rows
 
 
@@ -242,6 +244,18 @@ def get_index_jobs() -> list[dict]:
     return rows
 
 
+def get_latest_completed_project() -> str | None:
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        "SELECT project_name FROM index_jobs WHERE status = 'completed' ORDER BY updated_at DESC LIMIT 1"
+    )
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return row["project_name"] if row else None
+
+
 def get_latest_job_by_path(root_path: str) -> dict | None:
     """Return the most recent job for this root_path regardless of status."""
     conn = get_connection()
@@ -323,6 +337,32 @@ def get_domain_entity(entity_id: int) -> dict | None:
     cursor.execute(
         "SELECT id, name, project_name, description FROM domain_entities WHERE id = %s",
         (entity_id,),
+    )
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return row
+
+
+def get_task(task_id: int) -> dict | None:
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        "SELECT id, meeting_id, title, description, assignee, jira_ticket_id FROM tasks WHERE id = %s",
+        (task_id,),
+    )
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return row
+
+
+def get_task_by_jira_id(jira_ticket_id: str) -> dict | None:
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        "SELECT id, meeting_id, title, description, assignee, jira_ticket_id FROM tasks WHERE jira_ticket_id = %s",
+        (jira_ticket_id,),
     )
     row = cursor.fetchone()
     cursor.close()

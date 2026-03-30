@@ -39,7 +39,7 @@ if st.session_state.get("_loaded_mid") != meeting_id:
         st.error(f"Could not load meeting: {e}")
         st.stop()
 
-st.title(st.session_state.get("m_title", f"Meeting #{meeting_id}"))
+st.title(f"M{meeting_id}: {st.session_state.get('m_title', f'Meeting #{meeting_id}')}")
 
 # Transcript
 st.header("Transcript")
@@ -126,7 +126,7 @@ if tasks:
         module = task.get("module", "")
         dismissed = task.get("dismissed", False)
 
-        label = task.get("title", "Untitled")
+        label = f"T{task.get('task_seq', i + 1)}: {task.get('title', 'Untitled')}"
         if dismissed:
             label = f"{label} — Dismissed"
 

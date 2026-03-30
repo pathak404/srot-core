@@ -32,7 +32,7 @@ else:
         with st.container():
             col1, col2 = st.columns([5, 1])
             with col1:
-                st.markdown(f"### {title}")
+                st.markdown(f"### M{m['id']}: {title}")
                 st.caption(f"{filename}  &middot;  {created}  &middot;  {task_count} task{'s' if task_count != 1 else ''}")
             with col2:
                 st.write("")
