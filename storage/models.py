@@ -23,6 +23,8 @@ def create_tables():
             id INT AUTO_INCREMENT PRIMARY KEY,
             title VARCHAR(500),
             filename VARCHAR(500) NOT NULL,
+            status VARCHAR(20) DEFAULT 'completed',
+            source VARCHAR(20) DEFAULT 'upload',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -53,11 +55,11 @@ def create_tables():
         )
     """)
     # Add columns if they don't exist
-    # Add title to meetings if not exists
-    try:
-        cursor.execute("ALTER TABLE meetings ADD COLUMN title VARCHAR(500) AFTER id")
-    except mysql.connector.errors.ProgrammingError:
-        pass
+    for mcol, mdef in [("title", "VARCHAR(500) AFTER id"), ("status", "VARCHAR(20) DEFAULT 'completed'"), ("source", "VARCHAR(20) DEFAULT 'upload'")]:
+        try:
+            cursor.execute(f"ALTER TABLE meetings ADD COLUMN {mcol} {mdef}")
+        except mysql.connector.errors.ProgrammingError:
+            pass
     for col, definition in [("jira_worthy", "BOOLEAN DEFAULT TRUE"), ("jira_reason", "VARCHAR(500)"), ("module", "VARCHAR(255) DEFAULT 'General'"), ("is_grouped", "BOOLEAN DEFAULT FALSE"), ("dismissed", "BOOLEAN DEFAULT FALSE")]:
         try:
             cursor.execute(f"ALTER TABLE tasks ADD COLUMN {col} {definition}")

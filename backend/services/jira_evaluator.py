@@ -6,9 +6,10 @@ JIRA_SUGGESTION_PROMPT = """You are a project management assistant. Given a list
 
 Rules:
 - Group related tasks into one Jira ticket per module
-- Each Jira ticket should have a short, clear title (e.g. "Payments: Sprint 12 tasks")
+- Each Jira ticket title should be short and clear, describing the work only — do NOT prefix the title with the module name (e.g. use "Implement payout status flow" not "Payments: Implement payout status flow")
 - List all work items in the description as bullet points
-- Skip trivial items that don't need tracking (sharing an ID, quick confirmations, forwarding a link)
+- Skip any task that does not require writing code: manual testing requests, QA/UAT tasks, sending or forwarding something to a person, sharing credentials or links, scheduling meetings, verbal confirmations, documentation reviews
+- Only include tasks that require actual software development work (coding, API changes, bug fixes, feature implementation, configuration, deployment scripts, database changes, etc.)
 - If a module has only one significant task, it still gets its own ticket
 
 Return a JSON array of suggested Jira tickets:

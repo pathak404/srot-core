@@ -5,7 +5,7 @@ def get_all_meetings() -> list[dict]:
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute(
-        "SELECT m.id, m.title, m.filename, m.created_at, "
+        "SELECT m.id, m.title, m.filename, m.status, m.source, m.created_at, "
         "(SELECT COUNT(*) FROM tasks t WHERE t.meeting_id = m.id AND t.dismissed = FALSE) as task_count "
         "FROM meetings m ORDER BY m.created_at DESC"
     )
@@ -25,10 +25,19 @@ def get_meeting(meeting_id: int) -> dict | None:
     return row
 
 
-def save_meeting(filename: str, title: str = "") -> int:
+def update_meeting_status(meeting_id: int, status: str):
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("INSERT INTO meetings (title, filename) VALUES (%s, %s)", (title, filename))
+    cursor.execute("UPDATE meetings SET status = %s WHERE id = %s", (status, meeting_id))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+def save_meeting(filename: str, title: str = "", source: str = "upload", status: str = "completed") -> int:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO meetings (title, filename, status, source) VALUES (%s, %s, %s, %s)", (title, filename, status, source))
     conn.commit()
     meeting_id = cursor.lastrowid
     cursor.close()

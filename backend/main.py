@@ -1,19 +1,22 @@
 import os
 import shutil
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+import asyncio
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from storage.models import create_tables
 from storage.db import (
     get_all_meetings, get_meeting, save_meeting, save_transcript, get_transcript, update_transcript,
-    save_tasks, get_tasks, update_task, set_jira_ticket_id, delete_tasks, dismiss_task,
+    update_meeting_status, save_tasks, get_tasks, update_task, set_jira_ticket_id, delete_tasks, dismiss_task,
 )
 from backend.services.chunking import split_audio
 from backend.services.transcription import transcribe_meeting
 from backend.services.task_extractor import extract_tasks
 from backend.services.jira_evaluator import suggest_jira_tickets
 from backend.services.jira import create_jira_ticket, is_jira_configured
+from backend.services.live_transcription import LiveTranscriptionSession
 
 app = FastAPI(title="AI Meeting Assistant MVP")
 
@@ -144,3 +147,105 @@ def create_jira(body: JiraCreate):
     result = create_jira_ticket(body.title, body.description, body.assignee)
     set_jira_ticket_id(body.task_id, result["ticket_id"])
     return result
+
+
+
+# Live Transcription 
+
+active_sessions: dict[int, LiveTranscriptionSession] = {}
+
+
+class LiveMeetingCreate(BaseModel):
+    title: str = ""
+
+
+@app.post("/start-live-meeting")
+def start_live_meeting(body: LiveMeetingCreate):
+    title = body.title.strip() or "Live Meeting"
+    meeting_id = save_meeting("live_recording", title, source="live", status="live")
+    save_transcript(meeting_id, "")
+    return {"meeting_id": meeting_id}
+
+
+@app.websocket("/ws/live-transcribe/{meeting_id}")
+async def live_transcribe(websocket: WebSocket, meeting_id: int):
+    await websocket.accept()
+
+    session = LiveTranscriptionSession(meeting_id)
+    active_sessions[meeting_id] = session
+
+    try:
+        await session.start()
+
+        async def receive_audio():
+            try:
+                while True:
+                    data = await websocket.receive_bytes()
+                    await session.send_audio(data)
+            except (WebSocketDisconnect, Exception):
+                pass
+
+        async def send_transcript():
+            try:
+                async for text in session.receive_text():
+                    try:
+                        await websocket.send_json({"type": "transcript", "text": text})
+                    except Exception:
+                        return
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+
+        async def periodic_save():
+            try:
+                while True:
+                    await asyncio.sleep(30)
+                    if session.get_buffer():
+                        update_transcript(meeting_id, session.get_buffer())
+            except asyncio.CancelledError:
+                pass
+
+        audio_task = asyncio.create_task(receive_audio())
+        transcript_task = asyncio.create_task(send_transcript())
+        save_task = asyncio.create_task(periodic_save())
+
+        # Wait for browser to disconnect, then cancel the rest
+        await audio_task
+        transcript_task.cancel()
+        save_task.cancel()
+        await asyncio.gather(transcript_task, save_task, return_exceptions=True)
+
+    except Exception as e:
+        try:
+            await websocket.send_json({"type": "error", "text": str(e)})
+        except Exception:
+            pass
+    finally:
+        buffer = await session.stop()
+        if buffer:
+            update_transcript(meeting_id, buffer)
+        active_sessions.pop(meeting_id, None)
+
+
+@app.post("/finalize-meeting/{meeting_id}")
+def finalize_meeting(meeting_id: int):
+    transcript = get_transcript(meeting_id)
+    if not transcript:
+        raise HTTPException(status_code=404, detail="No transcript found")
+
+    from backend.services.transcription import refine_transcript
+    refined = refine_transcript(transcript)
+    update_transcript(meeting_id, refined)
+    update_meeting_status(meeting_id, "completed")
+
+    tasks = _extract_and_suggest(refined, meeting_id)
+
+    return {"status": "finalized", "meeting_id": meeting_id, "tasks": tasks}
+
+
+@app.get("/live")
+def live_page():
+    live_html_path = os.path.join(os.path.dirname(__file__), "..", "frontend", "static", "live.html")
+    with open(live_html_path, "r") as f:
+        return HTMLResponse(content=f.read())

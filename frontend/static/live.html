@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Transcription</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f8f9fa; color: #333; }
+        .container { max-width: 900px; margin: 0 auto; padding: 24px; }
+        h1 { font-size: 24px; margin-bottom: 8px; }
+        .subtitle { color: #666; margin-bottom: 24px; font-size: 14px; }
+        .controls { display: flex; gap: 12px; margin-bottom: 24px; align-items: center; }
+        button { padding: 10px 24px; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; transition: opacity 0.2s; }
+        button:disabled { opacity: 0.4; cursor: not-allowed; }
+        .btn-start { background: #22c55e; color: white; }
+        .btn-stop { background: #ef4444; color: white; }
+        .btn-finalize { background: #3b82f6; color: white; }
+        .status { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #666; }
+        .dot { width: 10px; height: 10px; border-radius: 50%; }
+        .dot-idle { background: #ccc; }
+        .dot-recording { background: #ef4444; animation: pulse 1.5s infinite; }
+        .dot-done { background: #22c55e; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+        .transcript-box { background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; min-height: 400px; max-height: 70vh; overflow-y: auto; font-size: 15px; line-height: 1.7; white-space: pre-wrap; word-wrap: break-word; }
+        .transcript-box:empty::before { content: 'Transcript will appear here...'; color: #aaa; }
+        .message { margin-top: 16px; padding: 12px 16px; border-radius: 8px; font-size: 14px; }
+        .msg-error { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
+        .msg-success { background: #f0fdf4; color: #16a34a; border: 1px solid #bbf7d0; }
+        .back-link { display: inline-block; margin-top: 16px; color: #3b82f6; text-decoration: none; font-size: 14px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 id="title">Live Transcription</h1>
+        <div class="subtitle" id="meetingInfo"></div>
+
+        <div class="controls">
+            <button class="btn-start" id="btnStart" onclick="startRecording()">Start Recording</button>
+            <button class="btn-stop" id="btnStop" onclick="stopRecording()" disabled>Stop Recording</button>
+            <button class="btn-finalize" id="btnFinalize" onclick="finalizeMeeting()" disabled>Finalize & Extract Tasks</button>
+            <div class="status">
+                <div class="dot dot-idle" id="statusDot"></div>
+                <span id="statusText">Ready</span>
+            </div>
+        </div>
+
+        <div class="transcript-box" id="transcript"></div>
+        <div id="messages"></div>
+        <a class="back-link" id="backLink" href="#">Back to Meetings</a>
+    </div>
+
+    <script>
+        const API_BASE = window.location.origin;
+        const WS_BASE = API_BASE.replace('http', 'ws');
+
+        const params = new URLSearchParams(window.location.search);
+        const meetingId = params.get('meeting_id');
+        const streamlitPort = params.get('ui_port') || '8501';
+        const STREAMLIT_BASE = `http://${window.location.hostname}:${streamlitPort}`;
+
+        document.getElementById('backLink').href = `${STREAMLIT_BASE}/meetings`;
+
+        if (!meetingId) {
+            showMessage('No meeting_id provided in URL.', 'error');
+            document.getElementById('btnStart').disabled = true;
+        } else {
+            document.getElementById('meetingInfo').textContent = `Meeting #${meetingId}`;
+        }
+
+        let audioContext = null;
+        let sourceNode = null;
+        let workletNode = null;
+        let ws = null;
+        let stream = null;
+
+        function setStatus(state, text) {
+            const dot = document.getElementById('statusDot');
+            const statusText = document.getElementById('statusText');
+            dot.className = `dot dot-${state}`;
+            statusText.textContent = text;
+        }
+
+        function showMessage(text, type) {
+            const div = document.getElementById('messages');
+            div.innerHTML = `<div class="message msg-${type}">${text}</div>`;
+        }
+
+        function float32ToPcm16(float32Array) {
+            const pcm16 = new Int16Array(float32Array.length);
+            for (let i = 0; i < float32Array.length; i++) {
+                let s = Math.max(-1, Math.min(1, float32Array[i]));
+                pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+            }
+            return pcm16.buffer;
+        }
+
+        async function startRecording() {
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({
+                    audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true }
+                });
+
+                audioContext = new AudioContext({ sampleRate: 16000 });
+                sourceNode = audioContext.createMediaStreamSource(stream);
+
+                // Use ScriptProcessor for broad compatibility (AudioWorklet needs HTTPS)
+                const bufferSize = 4096;
+                const processorNode = audioContext.createScriptProcessor(bufferSize, 1, 1);
+
+                ws = new WebSocket(`${WS_BASE}/ws/live-transcribe/${meetingId}`);
+                ws.binaryType = 'arraybuffer';
+
+                ws.onopen = () => {
+                    setStatus('recording', 'Recording...');
+                    document.getElementById('btnStart').disabled = true;
+                    document.getElementById('btnStop').disabled = false;
+
+                    processorNode.onaudioprocess = (e) => {
+                        if (ws.readyState === WebSocket.OPEN) {
+                            const float32 = e.inputBuffer.getChannelData(0);
+                            const pcm16 = float32ToPcm16(float32);
+                            ws.send(pcm16);
+                        }
+                    };
+
+                    sourceNode.connect(processorNode);
+                    processorNode.connect(audioContext.destination);
+                };
+
+                ws.onmessage = (e) => {
+                    const msg = JSON.parse(e.data);
+                    if (msg.type === 'transcript') {
+                        const box = document.getElementById('transcript');
+                        box.textContent += msg.text;
+                        box.scrollTop = box.scrollHeight;
+                    } else if (msg.type === 'error') {
+                        showMessage(msg.text, 'error');
+                    }
+                };
+
+                ws.onclose = (e) => {
+                    if (e.code !== 1000) {
+                        showMessage(`Connection closed: ${e.reason || 'Unknown reason'} (code ${e.code})`, 'error');
+                    }
+                };
+
+                ws.onerror = () => {
+                    showMessage('WebSocket connection error.', 'error');
+                };
+
+            } catch (err) {
+                showMessage(`Microphone error: ${err.message}`, 'error');
+            }
+        }
+
+        function stopRecording() {
+            if (audioContext) {
+                audioContext.close();
+                audioContext = null;
+            }
+            if (stream) {
+                stream.getTracks().forEach(t => t.stop());
+                stream = null;
+            }
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.close(1000, 'User stopped');
+            }
+
+            setStatus('done', 'Recording stopped');
+            document.getElementById('btnStop').disabled = true;
+            // Short wait for server to flush transcript to DB before enabling Finalize
+            setTimeout(() => {
+                document.getElementById('btnFinalize').disabled = false;
+            }, 1500);
+        }
+
+        async function finalizeMeeting() {
+            document.getElementById('btnFinalize').disabled = true;
+            setStatus('idle', 'Finalizing...');
+
+            try {
+                const resp = await fetch(`${API_BASE}/finalize-meeting/${meetingId}`, { method: 'POST' });
+                const data = await resp.json();
+
+                if (resp.ok) {
+                    setStatus('done', 'Finalized!');
+                    showMessage(`Meeting finalized! ${data.tasks?.length || 0} tasks extracted.`, 'success');
+                    document.getElementById('messages').innerHTML += `<br><a class="back-link" href="${STREAMLIT_BASE}/meeting?id=${meetingId}">View in Meeting Detail</a>`;
+                } else {
+                    setStatus('done', 'Recording stopped');
+                    showMessage(data.detail || 'Finalization failed.', 'error');
+                    document.getElementById('btnFinalize').disabled = false;
+                }
+            } catch (err) {
+                setStatus('done', 'Recording stopped');
+                showMessage(`Error: ${err.message}`, 'error');
+                document.getElementById('btnFinalize').disabled = false;
+            }
+        }
+    </script>
+</body>
+</html>
