@@ -1,0 +1,153 @@
+
+import json
+import re
+
+from backend.services.code_knowledge import get_manual_context
+from backend.services import graph_store, vector_index
+
+_STOP_WORDS = {
+    "the", "and", "for", "with", "this", "that", "from", "into", "have",
+    "will", "need", "should", "would", "could", "also", "then", "when",
+    "where", "which", "their", "they", "them", "about", "after", "before",
+    "update", "add", "new", "remove", "change", "implement", "create",
+    "make", "fix", "task", "feature", "service", "module",
+}
+
+
+def _extract_terms(tasks: list[dict]) -> list[str]:
+    text = " ".join(
+        f"{t.get('title', '')} {t.get('description', '')}" for t in tasks
+    )
+    # Split camelCase
+    text = re.sub(r"([a-z])([A-Z])", r"\1 \2", text)
+    # Replace non-alphanumeric with space
+    text = re.sub(r"[^a-zA-Z0-9 ]", " ", text)
+    words = text.split()
+    seen: set[str] = set()
+    terms: list[str] = []
+    for w in words:
+        low = w.lower()
+        if len(low) >= 3 and low not in _STOP_WORDS and low not in seen:
+            seen.add(low)
+            terms.append(w)
+    return terms[:25]
+
+
+def _format_graph_results(graph_results: list[dict]) -> tuple[list[str], list[str], list[str]]:
+    enum_lines = []
+    service_lines = []
+    function_lines = []
+    seen_names: set[str] = set()
+
+    for r in graph_results:
+        name = r.get("name", "")
+        if name in seen_names:
+            continue
+        seen_names.add(name)
+
+        if r["entity_type"] == "enum":
+            try:
+                values = json.loads(r["values_json"] or "[]")
+            except Exception:
+                values = []
+            svc = f" [{r['service']}]" if r.get("service") else ""
+            if values:
+                vals_str = ", ".join(
+                    f"{v['name']}({v['value']})" if isinstance(v, dict) else str(v)
+                    for v in values
+                )
+            else:
+                vals_str = "no values indexed"
+            enum_lines.append(f"- {name}{svc}: {vals_str}")
+
+        elif r["entity_type"] == "service":
+            service_lines.append(f"- {name}")
+
+        elif r["entity_type"] == "function":
+            svc = f" [{r['service']}]" if r.get("service") else ""
+            params = r.get("params") or ""
+            ret = r.get("return_type") or ""
+            sig = f"{name}({params})"
+            if ret:
+                sig += f" → {ret}"
+            function_lines.append(f"- {sig}{svc}")
+
+    return enum_lines, service_lines, function_lines
+
+
+def get_jira_context(tasks: list[dict], project_name: str | None = None) -> str:
+
+    if not tasks:
+        return ""
+
+    terms = _extract_terms(tasks)
+    task_text_full = " ".join(
+        f"{t.get('title', '')} {t.get('description', '')}" for t in tasks
+    )
+
+    sections: list[str] = []
+
+    # 1. Graph query (Neo4j) - enums, services, functions
+    graph_results: list[dict] = []
+    if graph_store.is_available():
+        try:
+            graph_results = graph_store.query_context(terms, project_name)
+        except Exception:
+            pass
+
+    enum_lines, service_lines, function_lines = _format_graph_results(graph_results)
+    if enum_lines:
+        sections.append("Enums:\n" + "\n".join(enum_lines))
+    if service_lines:
+        sections.append("Services:\n" + "\n".join(service_lines))
+    if function_lines:
+        sections.append("Functions:\n" + "\n".join(function_lines))
+
+    # 2. Domain entity context (Neo4j)
+    if graph_store.is_available():
+        try:
+            domain_results = graph_store.query_domain_context(terms, project_name)
+            if domain_results:
+                domain_lines = []
+                for dr in domain_results:
+                    svc = dr.get("service") or ""
+                    funcs = [f for f in (dr.get("functions") or []) if f]
+                    line = f"- {dr['name']}"
+                    if svc:
+                        line += f" → {svc}"
+                    if funcs:
+                        line += f" (functions: {', '.join(funcs)})"
+                    if dr.get("description"):
+                        line += f" — {dr['description']}"
+                    domain_lines.append(line)
+                sections.append("Domain Entities:\n" + "\n".join(domain_lines))
+        except Exception:
+            pass
+
+    # 3. Semantic search (Qdrant)
+    vector_snippets: list[str] = []
+    if vector_index.is_available():
+        try:
+            vector_snippets = vector_index.search(task_text_full, project_name, top_k=3)
+        except Exception:
+            pass
+
+    if vector_snippets:
+        trimmed = [s[:400] for s in vector_snippets]
+        sections.append("Relevant code:\n" + "\n---\n".join(trimmed))
+
+    # 4. Manual entities (MySQL fallback)
+    graph_names = {r["name"].lower() for r in graph_results}
+    manual_raw = get_manual_context(tasks)
+    if manual_raw:
+        filtered_manual = [
+            line for line in manual_raw.splitlines()
+            if line and not any(name in line.lower() for name in graph_names)
+        ]
+        if filtered_manual:
+            sections.append("Additional context:\n" + "\n".join(filtered_manual))
+
+    if not sections:
+        return ""
+
+    return "Code Knowledge:\n\n" + "\n\n".join(sections)

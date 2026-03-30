@@ -18,9 +18,14 @@ _HINGLISH_PROMPT = (
     "Output ONLY the converted text:\n{text}"
 )
 
+    
+def _has_indic_script(text: str) -> bool:
+    """ True if text contains any Indic script character (Devanagari through Malayalam) """
+    return any("\u0900" <= c <= "\u0D7F" for c in text)
+
 
 async def _to_hinglish_async(text: str) -> str:
-    if not any("\u0900" <= c <= "\u097F" for c in text):
+    if not _has_indic_script(text):
         return text
     try:
         resp = await client.aio.models.generate_content(
@@ -32,9 +37,19 @@ async def _to_hinglish_async(text: str) -> str:
         return text
 
 
+_LIVE_SYSTEM_INSTRUCTION = (
+    "You are a transcriptionist for Hinglish (Hindi + English) conversations. "
+    "ALWAYS output transcription in Roman script only — never use Devanagari, Telugu, "
+    "Tamil, or any other native script. Write Hindi words phonetically in English letters "
+    "(e.g., 'kya kar rahe ho', 'theek hai', 'abhi nahi'). "
+    "Keep English words exactly as spoken. Do not translate or paraphrase."
+)
+
+
 def _build_live_config():
     return types.LiveConnectConfig(
         response_modalities=["AUDIO"],
+        system_instruction=_LIVE_SYSTEM_INSTRUCTION,
         input_audio_transcription=types.AudioTranscriptionConfig(),
     )
 
@@ -66,8 +81,17 @@ class LiveTranscriptionSession:
             sc = response.server_content
             if not sc:
                 continue
-            if sc.input_transcription and sc.input_transcription.text:
-                pending += sc.input_transcription.text
+            if sc.input_transcription:
+                if sc.input_transcription.text:
+                    pending += sc.input_transcription.text
+                # input_transcription.finished marks end of user's speech turn -
+                # independent from turn_complete (which is about the model's output)
+                if sc.input_transcription.finished and pending:
+                    converted = await _to_hinglish_async(pending)
+                    pending = ""
+                    self.buffer += converted
+                    yield converted
+            # Fallback: flush any remaining pending text on model turn complete
             if sc.turn_complete and pending:
                 converted = await _to_hinglish_async(pending)
                 pending = ""

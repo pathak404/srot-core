@@ -127,8 +127,6 @@ if tasks:
         dismissed = task.get("dismissed", False)
 
         label = task.get("title", "Untitled")
-        if module:
-            label = f"{label} [{module}]"
         if dismissed:
             label = f"{label} — Dismissed"
 

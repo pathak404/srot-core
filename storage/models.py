@@ -54,6 +54,39 @@ def create_tables():
             FOREIGN KEY (meeting_id) REFERENCES meetings(id)
         )
     """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS code_entities (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            type VARCHAR(50) NOT NULL,
+            service VARCHAR(255),
+            values_json TEXT,
+            description TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS index_jobs (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            project_name VARCHAR(255) NOT NULL,
+            root_path VARCHAR(1000) NOT NULL,
+            status VARCHAR(50) DEFAULT 'pending',
+            node_count INT DEFAULT 0,
+            edge_count INT DEFAULT 0,
+            error TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS domain_entities (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            project_name VARCHAR(255),
+            description TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     # Add columns if they don't exist
     for mcol, mdef in [("title", "VARCHAR(500) AFTER id"), ("status", "VARCHAR(20) DEFAULT 'completed'"), ("source", "VARCHAR(20) DEFAULT 'upload'")]:
         try:
@@ -63,6 +96,11 @@ def create_tables():
     for col, definition in [("jira_worthy", "BOOLEAN DEFAULT TRUE"), ("jira_reason", "VARCHAR(500)"), ("module", "VARCHAR(255) DEFAULT 'General'"), ("is_grouped", "BOOLEAN DEFAULT FALSE"), ("dismissed", "BOOLEAN DEFAULT FALSE")]:
         try:
             cursor.execute(f"ALTER TABLE tasks ADD COLUMN {col} {definition}")
+        except mysql.connector.errors.ProgrammingError:
+            pass
+    for col, definition in [("progress", "INT DEFAULT 0"), ("current_step", "VARCHAR(300) DEFAULT ''")]:
+        try:
+            cursor.execute(f"ALTER TABLE index_jobs ADD COLUMN {col} {definition}")
         except mysql.connector.errors.ProgrammingError:
             pass
     conn.commit()

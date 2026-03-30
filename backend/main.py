@@ -1,7 +1,7 @@
 import os
 import shutil
 import asyncio
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, WebSocket, WebSocketDisconnect, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -10,6 +10,9 @@ from storage.models import create_tables
 from storage.db import (
     get_all_meetings, get_meeting, save_meeting, save_transcript, get_transcript, update_transcript,
     update_meeting_status, save_tasks, get_tasks, update_task, set_jira_ticket_id, delete_tasks, dismiss_task,
+    get_all_code_entities, save_code_entity, delete_code_entity,
+    create_index_job, update_index_job, get_index_jobs, get_index_job, get_latest_job_by_path,
+    get_domain_entities, save_domain_entity, delete_domain_entity, get_domain_entity,
 )
 from backend.services.chunking import split_audio
 from backend.services.transcription import transcribe_meeting
@@ -17,6 +20,7 @@ from backend.services.task_extractor import extract_tasks
 from backend.services.jira_evaluator import suggest_jira_tickets
 from backend.services.jira import create_jira_ticket, is_jira_configured
 from backend.services.live_transcription import LiveTranscriptionSession
+from backend.services.code_indexer import run_indexing
 
 app = FastAPI(title="AI Meeting Assistant MVP")
 
@@ -242,6 +246,158 @@ def finalize_meeting(meeting_id: int):
     tasks = _extract_and_suggest(refined, meeting_id)
 
     return {"status": "finalized", "meeting_id": meeting_id, "tasks": tasks}
+
+
+# Code Knowledge - Index Jobs + Manual Entities
+
+class IndexProjectRequest(BaseModel):
+    project_name: str
+    root_path: str
+    force: bool = False
+
+
+@app.post("/index-project")
+async def index_project(body: IndexProjectRequest, background_tasks: BackgroundTasks):
+    # Dedup check based on most recent job for this path
+    if not body.force:
+        latest = get_latest_job_by_path(body.root_path)
+        if latest:
+            if latest["status"] == "completed":
+                return {
+                    "job_id": latest["id"],
+                    "status": "already_indexed",
+                    "project_name": latest["project_name"],
+                    "node_count": latest["node_count"],
+                    "edge_count": latest["edge_count"],
+                }
+            if latest["status"] in ("running", "pending"):
+                return {
+                    "job_id": latest["id"],
+                    "status": "already_running",
+                    "project_name": latest["project_name"],
+                }
+            # status == "failed" -> fall through and re-index
+
+    job_id = create_index_job(body.project_name, body.root_path)
+    background_tasks.add_task(run_indexing, job_id, body.root_path, body.project_name)
+    return {"job_id": job_id, "status": "started"}
+
+
+@app.get("/index-jobs")
+def list_index_jobs():
+    return get_index_jobs()
+
+
+@app.get("/index-jobs/{job_id}")
+def get_index_job_status(job_id: int):
+    job = get_index_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+class CodeEntityCreate(BaseModel):
+    name: str
+    type: str
+    service: str | None = None
+    values_json: str | None = None
+    description: str | None = None
+
+
+@app.get("/code-knowledge")
+def list_code_knowledge():
+    return get_all_code_entities()
+
+
+@app.post("/code-knowledge")
+def create_code_knowledge(body: CodeEntityCreate):
+    entity_id = save_code_entity(body.name, body.type, body.service, body.values_json, body.description)
+    return {"id": entity_id}
+
+
+@app.delete("/code-knowledge/{entity_id}")
+def remove_code_knowledge(entity_id: int):
+    delete_code_entity(entity_id)
+    return {"status": "deleted"}
+
+
+# Domain Entities
+
+class DomainEntityCreate(BaseModel):
+    name: str
+    project_name: str | None = None
+    description: str | None = None
+
+
+class DomainEntityLink(BaseModel):
+    domain_name: str
+    service_name: str
+    project_name: str
+    rel_type: str = "HANDLES"
+
+
+@app.get("/domain-entities")
+def list_domain_entities(project: str | None = None):
+    entities = get_domain_entities(project)
+    # Enrich with linked services from Neo4j
+    from backend.services import graph_store
+    if graph_store.is_available():
+        try:
+            neo4j_map = {e["name"]: e for e in graph_store.get_domain_entities(project)}
+            for entity in entities:
+                neo_entry = neo4j_map.get(entity["name"], {})
+                entity["linked_services"] = neo_entry.get("linked_services", [])
+        except Exception:
+            for entity in entities:
+                entity["linked_services"] = []
+    return entities
+
+
+@app.post("/domain-entities")
+def create_domain_entity_endpoint(body: DomainEntityCreate):
+    entity_id = save_domain_entity(body.name, body.project_name, body.description)
+    if body.project_name:
+        from backend.services.graph_store import create_domain_entity
+        try:
+            create_domain_entity(body.project_name, body.name, body.description or "")
+        except Exception:
+            pass
+    return {"id": entity_id}
+
+
+@app.delete("/domain-entities/{entity_id}")
+def delete_domain_entity_endpoint(entity_id: int):
+    entity = get_domain_entity(entity_id)
+    delete_domain_entity(entity_id)
+    if entity and entity.get("project_name"):
+        from backend.services.graph_store import delete_domain_entity_node
+        try:
+            delete_domain_entity_node(entity["project_name"], entity["name"])
+        except Exception:
+            pass
+    return {"status": "deleted"}
+
+
+@app.post("/domain-entities/link")
+def link_domain_entity_endpoint(body: DomainEntityLink):
+    from backend.services.graph_store import link_domain_entity
+    try:
+        link_domain_entity(body.project_name, body.domain_name, body.service_name, body.rel_type)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"status": "linked"}
+
+
+@app.get("/projects")
+def list_projects():
+    from backend.services.graph_store import get_all_projects
+    return get_all_projects()
+
+
+@app.get("/services/{project_name}")
+def list_services(project_name: str):
+    from backend.services.graph_store import get_services
+    return get_services(project_name)
 
 
 @app.get("/live")

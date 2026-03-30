@@ -9,3 +9,9 @@ python-dotenv==1.0.1
 requests==2.32.3
 streamlit>=1.55.0
 pytest==8.3.3
+neo4j>=5.20.0
+tree-sitter>=0.21.0
+tree-sitter-typescript>=0.21.0
+llama-index-core>=0.10.0
+llama-index-vector-stores-qdrant>=0.2.0
+qdrant-client>=1.9.0

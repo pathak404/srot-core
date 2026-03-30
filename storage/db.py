@@ -1,3 +1,4 @@
+import json
 from storage.models import get_connection
 
 
@@ -154,6 +155,179 @@ def delete_tasks(meeting_id: int):
     conn.commit()
     cursor.close()
     conn.close()
+
+
+# Code Entities (manual)
+
+def get_all_code_entities() -> list[dict]:
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT id, name, type, service, values_json, description FROM code_entities ORDER BY type, name")
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return rows
+
+
+def save_code_entity(name: str, entity_type: str, service: str | None = None, values_json: str | None = None, description: str | None = None) -> int:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO code_entities (name, type, service, values_json, description) VALUES (%s, %s, %s, %s, %s)",
+        (name, entity_type, service, values_json, description),
+    )
+    conn.commit()
+    entity_id = cursor.lastrowid
+    cursor.close()
+    conn.close()
+    return entity_id
+
+
+def delete_code_entity(entity_id: int):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM code_entities WHERE id = %s", (entity_id,))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+# Index Jobs
+
+def create_index_job(project_name: str, root_path: str) -> int:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO index_jobs (project_name, root_path, status) VALUES (%s, %s, 'pending')",
+        (project_name, root_path),
+    )
+    conn.commit()
+    job_id = cursor.lastrowid
+    cursor.close()
+    conn.close()
+    return job_id
+
+
+def update_index_job(
+    job_id: int,
+    status: str,
+    node_count: int = 0,
+    edge_count: int = 0,
+    error: str | None = None,
+    progress: int = 0,
+    current_step: str = "",
+):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE index_jobs SET status=%s, node_count=%s, edge_count=%s, error=%s, progress=%s, current_step=%s WHERE id=%s",
+        (status, node_count, edge_count, error, progress, current_step, job_id),
+    )
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+def get_index_jobs() -> list[dict]:
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        "SELECT id, project_name, root_path, status, node_count, edge_count, "
+        "error, progress, current_step, created_at, updated_at "
+        "FROM index_jobs ORDER BY created_at DESC"
+    )
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return rows
+
+
+def get_latest_job_by_path(root_path: str) -> dict | None:
+    """Return the most recent job for this root_path regardless of status."""
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        "SELECT id, project_name, root_path, status, node_count, edge_count, progress, current_step "
+        "FROM index_jobs WHERE root_path = %s ORDER BY created_at DESC LIMIT 1",
+        (root_path,),
+    )
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return row
+
+
+def get_index_job(job_id: int) -> dict | None:
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        "SELECT id, project_name, root_path, status, node_count, edge_count, "
+        "error, progress, current_step, created_at, updated_at "
+        "FROM index_jobs WHERE id=%s",
+        (job_id,),
+    )
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return row
+
+
+# Domain Entities (MySQL CRUD)
+
+def get_domain_entities(project_name: str | None = None) -> list[dict]:
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    if project_name:
+        cursor.execute(
+            "SELECT id, name, project_name, description, created_at FROM domain_entities "
+            "WHERE project_name = %s ORDER BY name",
+            (project_name,),
+        )
+    else:
+        cursor.execute(
+            "SELECT id, name, project_name, description, created_at FROM domain_entities "
+            "ORDER BY project_name, name"
+        )
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return rows
+
+
+def save_domain_entity(name: str, project_name: str | None, description: str | None = None) -> int:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO domain_entities (name, project_name, description) VALUES (%s, %s, %s)",
+        (name, project_name, description),
+    )
+    conn.commit()
+    entity_id = cursor.lastrowid
+    cursor.close()
+    conn.close()
+    return entity_id
+
+
+def delete_domain_entity(entity_id: int) -> None:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM domain_entities WHERE id = %s", (entity_id,))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+def get_domain_entity(entity_id: int) -> dict | None:
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        "SELECT id, name, project_name, description FROM domain_entities WHERE id = %s",
+        (entity_id,),
+    )
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return row
 
 
 def set_jira_ticket_id(task_id: int, ticket_id: str):
