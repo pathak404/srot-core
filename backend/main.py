@@ -14,6 +14,7 @@ from storage.db import (
     create_index_job, update_index_job, get_index_jobs, get_index_job, get_latest_job_by_path,
     get_domain_entities, save_domain_entity, delete_domain_entity, get_domain_entity,
     get_task, get_task_by_jira_id,
+    save_intelligence_state, save_live_tickets,
 )
 from backend.services.chunking import split_audio
 from backend.services.transcription import transcribe_meeting
@@ -22,6 +23,8 @@ from backend.services.jira_evaluator import suggest_jira_tickets
 from backend.services.jira import create_jira_ticket, is_jira_configured
 from backend.services.live_transcription import LiveTranscriptionSession
 from backend.services.code_indexer import run_indexing
+from dataclasses import asdict
+from backend.services.intelligence.pipeline import Pipeline
 
 app = FastAPI(title="AI Meeting Assistant MVP")
 
@@ -73,17 +76,36 @@ async def process_meeting(
     meeting_title = title.strip() or audio.filename
     meeting_id = save_meeting(audio.filename, meeting_title)
 
-    chunk_dir = os.path.join(UPLOAD_DIR, f"meeting_{meeting_id}")
-    chunks = split_audio(file_path, chunk_minutes=10, output_dir=chunk_dir)
+    # Use intelligence pipeline for both transcription and task extraction
+    pipeline = Pipeline(meeting_id)
+    await pipeline.start()
+    transcript, final_state = await pipeline.process_file(file_path)
+    await pipeline.stop()
 
-    transcript = transcribe_meeting(chunks, context=context)
     save_transcript(meeting_id, transcript)
+    save_intelligence_state(meeting_id, asdict(final_state))
+    save_live_tickets(meeting_id, final_state.tickets)
 
-    shutil.rmtree(chunk_dir, ignore_errors=True)
+    # Convert JiraState tickets into the existing tasks DB schema for backwards compat
+    task_dicts = [
+        {
+            "title": t["title"],
+            "description": t.get("description") or "",
+            "assignee": t.get("assignee"),
+            "jira_worthy": True,
+            "jira_reason": f"Extracted live: {t.get('type', 'task')}",
+            "module": "General",
+        }
+        for t in final_state.tickets
+    ]
+    task_ids = save_tasks(meeting_id, task_dicts)
+    for i, tid in enumerate(task_ids):
+        task_dicts[i]["id"] = tid
 
     return {
         "meeting_id": meeting_id,
         "transcript": transcript,
+        "tasks": task_dicts,
     }
 
 
@@ -200,6 +222,83 @@ def get_dev_task(meeting: int | None = None, task: int | None = None, jira: str 
 
 active_sessions: dict[int, LiveTranscriptionSession] = {}
 
+active_pipelines: dict[int, Pipeline] = {}
+
+
+@app.websocket("/ws/intelligence/{meeting_id}")
+async def intelligence_ws(websocket: WebSocket, meeting_id: int):
+    """
+    Intelligence pipeline WebSocket.
+    Client sends: raw PCM bytes (16kHz, 16-bit mono).
+    Server streams: JSON PipelineOutput (transcript_delta, jira_state, context_snapshot).
+    """
+    await websocket.accept()
+
+    pipeline = Pipeline(meeting_id)
+    active_pipelines[meeting_id] = pipeline
+    await pipeline.start()
+
+    async def receive_audio():
+        try:
+            while True:
+                data = await websocket.receive_bytes()
+                await pipeline.feed_audio(data)
+        except (WebSocketDisconnect, Exception):
+            pass
+
+    async def send_outputs():
+        try:
+            async for output in pipeline.run_streaming():
+                try:
+                    await websocket.send_json({
+                        "type": "intelligence",
+                        "transcript_delta": output.transcript_delta,
+                        "jira_state": asdict(output.jira_state),
+                        "context_snapshot": output.context_snapshot,
+                    })
+                except Exception:
+                    return
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+
+    async def periodic_save():
+        try:
+            while True:
+                await asyncio.sleep(60)
+                state = pipeline._jira_builder.get_state()
+                save_intelligence_state(meeting_id, asdict(state))
+                save_live_tickets(meeting_id, state.tickets)
+        except asyncio.CancelledError:
+            pass
+
+    audio_task = asyncio.create_task(receive_audio())
+    output_task = asyncio.create_task(send_outputs())
+    save_task = asyncio.create_task(periodic_save())
+
+    done, pending = await asyncio.wait(
+        [audio_task, output_task],
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+
+    for task in pending:
+        task.cancel()
+    save_task.cancel()
+
+    final_state = await pipeline.stop()
+    save_intelligence_state(meeting_id, asdict(final_state))
+    save_live_tickets(meeting_id, final_state.tickets)
+    active_pipelines.pop(meeting_id, None)
+
+    try:
+        await websocket.send_json({
+            "type": "final",
+            "jira_state": asdict(final_state),
+        })
+    except Exception:
+        pass
+
 
 class LiveMeetingCreate(BaseModel):
     title: str = ""
@@ -233,9 +332,16 @@ async def live_transcribe(websocket: WebSocket, meeting_id: int):
 
         async def send_transcript():
             try:
-                async for text in session.receive_text():
+                async for item in session.receive_text():
                     try:
-                        await websocket.send_json({"type": "transcript", "text": text})
+                        if "error" in item:
+                            await websocket.send_json({"type": "error", "text": item["error"]})
+                        else:
+                            await websocket.send_json({
+                                "type": "transcript",
+                                "text": item["text"],
+                                "is_final": item["is_final"],
+                            })
                     except Exception:
                         return
             except asyncio.CancelledError:

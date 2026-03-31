@@ -23,7 +23,8 @@
         .dot-done { background: #22c55e; }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
         .transcript-box { background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; min-height: 400px; max-height: 70vh; overflow-y: auto; font-size: 15px; line-height: 1.7; white-space: pre-wrap; word-wrap: break-word; }
-        .transcript-box:empty::before { content: 'Transcript will appear here...'; color: #aaa; }
+        .transcript-placeholder { color: #aaa; }
+        .interim-text { color: #999; }
         .message { margin-top: 16px; padding: 12px 16px; border-radius: 8px; font-size: 14px; }
         .msg-error { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
         .msg-success { background: #f0fdf4; color: #16a34a; border: 1px solid #bbf7d0; }
@@ -45,7 +46,10 @@
             </div>
         </div>
 
-        <div class="transcript-box" id="transcript"></div>
+        <div class="transcript-box" id="transcript">
+            <span class="transcript-placeholder" id="transcript-placeholder">Transcript will appear here...</span>
+            <span id="final-text"></span><span class="interim-text" id="interim-text"></span>
+        </div>
         <div id="messages"></div>
         <a class="back-link" id="backLink" href="#">Back to Meetings</a>
     </div>
@@ -131,9 +135,16 @@
                 ws.onmessage = (e) => {
                     const msg = JSON.parse(e.data);
                     if (msg.type === 'transcript') {
-                        const box = document.getElementById('transcript');
-                        box.textContent += msg.text;
-                        box.scrollTop = box.scrollHeight;
+                        document.getElementById('transcript-placeholder').style.display = 'none';
+                        const finalEl = document.getElementById('final-text');
+                        const interimEl = document.getElementById('interim-text');
+                        if (msg.is_final) {
+                            finalEl.textContent += msg.text + ' ';
+                            interimEl.textContent = '';
+                        } else {
+                            interimEl.textContent = msg.text;
+                        }
+                        document.getElementById('transcript').scrollTop = document.getElementById('transcript').scrollHeight;
                     } else if (msg.type === 'error') {
                         showMessage(msg.text, 'error');
                     }

@@ -8,7 +8,7 @@ JIRA_SUGGESTION_PROMPT = """You are a project management assistant.
 Given tasks from a meeting, generate Jira tickets.
 
 Rules:
-- Group related tasks into one ticket
+- Group related small tasks into one ticket
 - Title must be short, specific, and describe the work only
 - Description must be bullet points of actual development work only
 - Ignore non-dev tasks (QA, meetings, sharing info, etc.)
@@ -52,6 +52,7 @@ def suggest_jira_tickets(tasks: list[dict], project_name: str | None = None) -> 
         prompt += (
             f"\n{code_context}\n\n"
             "Apply the code context above to:\n"
+            "- Use code context to understand the context of the tasks.\n"
             "- NEVER mention graphql.ts or graphql.schema.ts file names.\n"
             "- NEVER mention secret keys, credentials, or any other sensitive information.\n\n"
         )

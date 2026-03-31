@@ -159,7 +159,7 @@ Tables are created automatically on first startup.
 **Terminal 1 — Backend:**
 
 ```bash
-source venv/bin/activate
+source .venv/bin/activate
 uvicorn backend.main:app --reload
 ```
 
@@ -168,7 +168,7 @@ API available at `http://localhost:8000`. Interactive docs at `http://localhost:
 **Terminal 2 — Frontend:**
 
 ```bash
-source venv/bin/activate
+source .venv/bin/activate
 streamlit run frontend/app.py
 ```
 

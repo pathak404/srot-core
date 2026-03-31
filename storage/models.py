@@ -103,6 +103,29 @@ def create_tables():
             cursor.execute(f"ALTER TABLE index_jobs ADD COLUMN {col} {definition}")
         except mysql.connector.errors.ProgrammingError:
             pass
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS intelligence_state (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            meeting_id INT NOT NULL UNIQUE,
+            state_json JSON NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            FOREIGN KEY (meeting_id) REFERENCES meetings(id)
+        )
+    """)
+    try:
+        cursor.execute("ALTER TABLE intelligence_state ADD UNIQUE (meeting_id)")
+    except mysql.connector.errors.DatabaseError:
+        pass
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS jira_live_tickets (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            meeting_id INT NOT NULL,
+            ticket_json JSON NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            FOREIGN KEY (meeting_id) REFERENCES meetings(id)
+        )
+    """)
     conn.commit()
     cursor.close()
     conn.close()

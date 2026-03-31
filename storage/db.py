@@ -380,3 +380,58 @@ def set_jira_ticket_id(task_id: int, ticket_id: str):
     conn.commit()
     cursor.close()
     conn.close()
+
+
+def save_intelligence_state(meeting_id: int, state: dict):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO intelligence_state (meeting_id, state_json) VALUES (%s, %s) "
+        "ON DUPLICATE KEY UPDATE state_json = VALUES(state_json), updated_at = CURRENT_TIMESTAMP",
+        (meeting_id, json.dumps(state))
+    )
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+def get_intelligence_state(meeting_id: int) -> dict | None:
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        "SELECT state_json FROM intelligence_state WHERE meeting_id = %s ORDER BY updated_at DESC LIMIT 1",
+        (meeting_id,)
+    )
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    if row:
+        return json.loads(row["state_json"])
+    return None
+
+
+def save_live_tickets(meeting_id: int, tickets: list[dict]):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM jira_live_tickets WHERE meeting_id = %s", (meeting_id,))
+    for ticket in tickets:
+        cursor.execute(
+            "INSERT INTO jira_live_tickets (meeting_id, ticket_json) VALUES (%s, %s)",
+            (meeting_id, json.dumps(ticket))
+        )
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+def get_live_tickets(meeting_id: int) -> list[dict]:
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        "SELECT ticket_json FROM jira_live_tickets WHERE meeting_id = %s ORDER BY created_at",
+        (meeting_id,)
+    )
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return [json.loads(r["ticket_json"]) for r in rows]

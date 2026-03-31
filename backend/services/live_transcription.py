@@ -1,111 +1,98 @@
 import asyncio
 import os
-from google import genai
-from google.genai import types
+from typing import AsyncGenerator, Optional
+
+from deepgram import AsyncDeepgramClient
+from deepgram.listen import ListenV1Results
 from dotenv import load_dotenv
-from backend.services.transcription import SYSTEM_INSTRUCTION, GLOSSARY, EXTRA_PROMPT, refine_transcript
 
 load_dotenv()
-
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-LIVE_MODEL = "gemini-2.5-flash-native-audio-latest"
-HINGLISH_MODEL = "gemini-2.5-flash-lite"
-
-_HINGLISH_PROMPT = (
-    "Convert to Hinglish. English words must stay exactly in English "
-    "(e.g. इज→is, इट→it, पॉसिबल→possible, चेंज→change, स्टेटस→status, "
-    "फाइव→five, फोर→four). Hindi words in Roman script. "
-    "Output ONLY the converted text:\n{text}"
-)
-
-    
-def _has_indic_script(text: str) -> bool:
-    """ True if text contains any Indic script character (Devanagari through Malayalam) """
-    return any("\u0900" <= c <= "\u0D7F" for c in text)
-
-
-async def _to_hinglish_async(text: str) -> str:
-    if not _has_indic_script(text):
-        return text
-    try:
-        resp = await client.aio.models.generate_content(
-            model=HINGLISH_MODEL,
-            contents=_HINGLISH_PROMPT.format(text=text),
-        )
-        return resp.text.strip() + " "
-    except Exception:
-        return text
-
-
-_LIVE_SYSTEM_INSTRUCTION = (
-    "You are a transcriptionist for Hinglish (Hindi + English) conversations. "
-    "ALWAYS output transcription in Roman script only — never use Devanagari, Telugu, "
-    "Tamil, or any other native script. Write Hindi words phonetically in English letters "
-    "(e.g., 'kya kar rahe ho', 'theek hai', 'abhi nahi'). "
-    "Keep English words exactly as spoken. Do not translate or paraphrase."
-)
-
-
-def _build_live_config():
-    return types.LiveConnectConfig(
-        response_modalities=["AUDIO"],
-        system_instruction=_LIVE_SYSTEM_INSTRUCTION,
-        input_audio_transcription=types.AudioTranscriptionConfig(),
-    )
 
 
 class LiveTranscriptionSession:
     def __init__(self, meeting_id: int):
         self.meeting_id = meeting_id
         self.buffer = ""
-        self._ctx = None
+        self._client = AsyncDeepgramClient(api_key=os.getenv("DEEPGRAM_API_KEY", ""))
+        self._audio_queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
+        # Each item: {"text": str, "is_final": bool} | {"error": str} | None (done sentinel)
+        self._transcript_queue: asyncio.Queue[Optional[dict]] = asyncio.Queue()
         self._running = False
+        self._stream_task: Optional[asyncio.Task] = None
 
     async def start(self):
-        config = _build_live_config()
-        self._session_mgr = client.aio.live.connect(model=LIVE_MODEL, config=config)
-        self._ctx = await self._session_mgr.__aenter__()
         self._running = True
+        self._stream_task = asyncio.create_task(self._stream_loop())
+
+    async def _stream_loop(self):
+        async def audio_source():
+            while self._running:
+                data = await self._audio_queue.get()
+                if data is None:
+                    return
+                yield data
+
+        try:
+            async with self._client.listen.v1.connect(
+                model="nova-2",
+                language="en-US",
+                smart_format="true",
+                interim_results="true",
+                punctuate="true",
+                encoding="linear16",
+                sample_rate=16000,
+                channels=1,
+            ) as connection:
+                async def send_loop():
+                    async for audio_bytes in audio_source():
+                        await connection.send_media(audio_bytes)
+                    await connection.send_close_stream()
+
+                sender = asyncio.create_task(send_loop())
+                try:
+                    async for message in connection:
+                        if not isinstance(message, ListenV1Results):
+                            continue
+                        alt = message.channel.alternatives[0]
+                        text = alt.transcript.strip()
+                        if not text:
+                            continue
+                        is_final = bool(message.is_final)
+                        await self._transcript_queue.put({"text": text, "is_final": is_final})
+                finally:
+                    await sender
+        except Exception as e:
+            await self._transcript_queue.put({"error": str(e) or "Deepgram connection failed"})
+        finally:
+            await self._transcript_queue.put(None)  # signal done
 
     async def send_audio(self, audio_bytes: bytes):
-        if not self._running or not self._ctx:
-            return
-        blob = types.Blob(data=audio_bytes, mime_type="audio/pcm;rate=16000")
-        await self._ctx.send_realtime_input(audio=blob)
+        if self._running:
+            await self._audio_queue.put(audio_bytes)
 
-    async def receive_text(self):
-        if not self._running or not self._ctx:
-            return
-        pending = ""
-        async for response in self._ctx.receive():
-            sc = response.server_content
-            if not sc:
+    async def receive_text(self) -> AsyncGenerator[dict, None]:
+        """Yields {"text": str, "is_final": bool} or {"error": str}. None signals end."""
+        while True:
+            try:
+                item = await asyncio.wait_for(self._transcript_queue.get(), timeout=0.5)
+                if item is None:
+                    return
+                if item.get("is_final"):
+                    self.buffer += item["text"] + " "
+                yield item
+            except asyncio.TimeoutError:
+                if not self._running:
+                    return
                 continue
-            if sc.input_transcription:
-                if sc.input_transcription.text:
-                    pending += sc.input_transcription.text
-                # input_transcription.finished marks end of user's speech turn -
-                # independent from turn_complete (which is about the model's output)
-                if sc.input_transcription.finished and pending:
-                    converted = await _to_hinglish_async(pending)
-                    pending = ""
-                    self.buffer += converted
-                    yield converted
-            # Fallback: flush any remaining pending text on model turn complete
-            if sc.turn_complete and pending:
-                converted = await _to_hinglish_async(pending)
-                pending = ""
-                self.buffer += converted
-                yield converted
 
     async def stop(self) -> str:
         self._running = False
-        if self._ctx:
+        await self._audio_queue.put(None)  # unblock audio_source
+        if self._stream_task:
             try:
-                await self._session_mgr.__aexit__(None, None, None)
-            except Exception:
-                pass
-            self._ctx = None
+                await asyncio.wait_for(self._stream_task, timeout=5.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                self._stream_task.cancel()
         return self.buffer
 
     def get_buffer(self) -> str:
