@@ -32,7 +32,7 @@ class DeepgramASR:
         Consumes an async generator of raw PCM bytes (16kHz, 16-bit mono).
         Yields DeepgramChunk for each final (is_final=True) transcript event
         immediately as each message arrives.
-        Interim results are discarded — only speech_final events flow downstream.
+        Interim results are discarded, only speech_final events flow downstream.
         """
         async with self._client.listen.v1.connect(
             model="nova-2",

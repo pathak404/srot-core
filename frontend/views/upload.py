@@ -24,7 +24,7 @@ if st.button("Process Meeting", disabled=audio_file is None):
 
 # --- Live Meeting ---
 st.divider()
-st.subheader("Or: Start a Live Meeting")
+st.subheader("Start a Live Meeting")
 live_title = st.text_input("Live meeting title", placeholder="e.g. Daily Standup", key="live_title")
 
 if st.button("Start Live Recording"):

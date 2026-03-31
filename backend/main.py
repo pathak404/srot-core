@@ -15,6 +15,7 @@ from storage.db import (
     get_domain_entities, save_domain_entity, delete_domain_entity, get_domain_entity,
     get_task, get_task_by_jira_id,
     save_intelligence_state, save_live_tickets,
+    save_meeting_summary, get_meeting_summary,
 )
 from backend.services.chunking import split_audio
 from backend.services.transcription import transcribe_meeting
@@ -79,12 +80,13 @@ async def process_meeting(
     # Use intelligence pipeline for both transcription and task extraction
     pipeline = Pipeline(meeting_id)
     await pipeline.start()
-    transcript, final_state = await pipeline.process_file(file_path)
+    transcript, final_state, summary_md = await pipeline.process_file(file_path)
     await pipeline.stop()
 
     save_transcript(meeting_id, transcript)
     save_intelligence_state(meeting_id, asdict(final_state))
     save_live_tickets(meeting_id, final_state.tickets)
+    save_meeting_summary(meeting_id, summary_md)
 
     # Convert JiraState tickets into the existing tasks DB schema for backwards compat
     task_dicts = [
@@ -106,6 +108,7 @@ async def process_meeting(
         "meeting_id": meeting_id,
         "transcript": transcript,
         "tasks": task_dicts,
+        "summary_md": summary_md,
     }
 
 
@@ -127,6 +130,7 @@ def get_meeting_endpoint(meeting_id: int):
         "filename": meeting.get("filename", ""),
         "transcript": transcript or "",
         "tasks": tasks,
+        "summary_md": get_meeting_summary(meeting_id),
     }
 
 
@@ -255,6 +259,7 @@ async def intelligence_ws(websocket: WebSocket, meeting_id: int):
                         "transcript_delta": output.transcript_delta,
                         "jira_state": asdict(output.jira_state),
                         "context_snapshot": output.context_snapshot,
+                        "summary_md": output.summary_md,
                     })
                 except Exception:
                     return
@@ -270,6 +275,7 @@ async def intelligence_ws(websocket: WebSocket, meeting_id: int):
                 state = pipeline._jira_builder.get_state()
                 save_intelligence_state(meeting_id, asdict(state))
                 save_live_tickets(meeting_id, state.tickets)
+                save_meeting_summary(meeting_id, pipeline.get_summary())
         except asyncio.CancelledError:
             pass
 
@@ -289,12 +295,14 @@ async def intelligence_ws(websocket: WebSocket, meeting_id: int):
     final_state = await pipeline.stop()
     save_intelligence_state(meeting_id, asdict(final_state))
     save_live_tickets(meeting_id, final_state.tickets)
+    save_meeting_summary(meeting_id, pipeline.get_summary())
     active_pipelines.pop(meeting_id, None)
 
     try:
         await websocket.send_json({
             "type": "final",
             "jira_state": asdict(final_state),
+            "summary_md": pipeline.get_summary(),
         })
     except Exception:
         pass

@@ -88,7 +88,7 @@ def create_tables():
         )
     """)
     # Add columns if they don't exist
-    for mcol, mdef in [("title", "VARCHAR(500) AFTER id"), ("status", "VARCHAR(20) DEFAULT 'completed'"), ("source", "VARCHAR(20) DEFAULT 'upload'")]:
+    for mcol, mdef in [("title", "VARCHAR(500) AFTER id"), ("status", "VARCHAR(20) DEFAULT 'completed'"), ("source", "VARCHAR(20) DEFAULT 'upload'"), ("summary_md", "MEDIUMTEXT")]:
         try:
             cursor.execute(f"ALTER TABLE meetings ADD COLUMN {mcol} {mdef}")
         except mysql.connector.errors.ProgrammingError:

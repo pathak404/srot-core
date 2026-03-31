@@ -34,7 +34,7 @@ async def run_indexing(job_id: int, root_path: str, project_name: str):
     try:
         _save("running", 0, "Counting TypeScript files…")
         total_files = await asyncio.to_thread(_count_ts_files, root_path)
-        _save("running", 5, f"Found {total_files} files — parsing…")
+        _save("running", 5, f"Found {total_files} files, parsing…")
 
         # Tree-sitter parsing
         entities = await asyncio.to_thread(parse_project, root_path)
@@ -65,7 +65,7 @@ async def run_indexing(job_id: int, root_path: str, project_name: str):
             )
         else:
             _save("running", 100,
-                  "Qdrant unavailable — skipping vector index",
+                  "Qdrant unavailable, skipping vector index",
                   node_count=node_count, edge_count=edge_count)
 
         _save("completed", 100,

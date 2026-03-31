@@ -85,6 +85,28 @@ def update_transcript(meeting_id: int, content: str):
     conn.close()
 
 
+def save_meeting_summary(meeting_id: int, summary_md: str):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE meetings SET summary_md = %s WHERE id = %s",
+        (summary_md, meeting_id),
+    )
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+def get_meeting_summary(meeting_id: int) -> str:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT summary_md FROM meetings WHERE id = %s", (meeting_id,))
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return (row[0] or "") if row else ""
+
+
 def save_tasks(meeting_id: int, tasks_list: list[dict]) -> list[int]:
     conn = get_connection()
     cursor = conn.cursor()

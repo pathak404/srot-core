@@ -13,6 +13,7 @@ from .llm_trigger import LLMTrigger
 from .llm_processor import GeminiLLM
 from .jira_state_builder import JiraStateBuilder, JiraState
 from .periodic_summarizer import PeriodicSummarizer
+from .meeting_summarizer import MeetingSummarizer
 from backend.services.knowledge_retriever import get_jira_context
 
 
@@ -21,6 +22,7 @@ class PipelineOutput:
     transcript_delta: str    # raw text from this chunk (for live display)
     jira_state: JiraState    # current full ticket + decision list
     context_snapshot: dict   # current ContextManager snapshot
+    summary_md: str = ""     # current cumulative Markdown summary
 
 
 class Pipeline:
@@ -40,15 +42,18 @@ class Pipeline:
         self._llm = GeminiLLM()
         self._jira_builder = JiraStateBuilder()
         self._summarizer = PeriodicSummarizer()
+        self._summarizer_md = MeetingSummarizer()
 
         self._audio_queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
         self._llm_queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=self._LLM_QUEUE_MAX)
         self._running = False
         self._llm_worker_task: Optional[asyncio.Task] = None
+        self._summary_worker_task: Optional[asyncio.Task] = None
 
     async def start(self):
         self._running = True
         self._llm_worker_task = asyncio.create_task(self._llm_worker())
+        self._summary_worker_task = asyncio.create_task(self._summary_worker())
 
     async def feed_audio(self, audio_bytes: bytes):
         await self._audio_queue.put(audio_bytes)
@@ -66,21 +71,32 @@ class Pipeline:
             if output:
                 yield output
 
-    async def process_file(self, file_path: str) -> tuple[str, JiraState]:
+    async def process_file(self, file_path: str) -> tuple[str, JiraState, str]:
         """
         Batch mode: transcribe file with Deepgram, run all chunks through pipeline.
-        Returns (full_transcript, JiraState). Transcribes once.
+        Returns (full_transcript, JiraState, summary_md).
         """
         chunks = await self._asr.transcribe_file(file_path)
         transcript = " ".join(c.text for c in chunks)
         for chunk in chunks:
             await self._process_chunk(chunk)
         await self._drain_llm_queue()
-        return transcript, self._jira_builder.get_state()
+        await self._summarizer_md.flush()
+        return transcript, self._jira_builder.get_state(), self._summarizer_md.get_summary()
+
+    def get_summary(self) -> str:
+        return self._summarizer_md.get_summary()
 
     async def stop(self) -> JiraState:
         self._running = False
         await self._audio_queue.put(None)
+        if self._summary_worker_task:
+            self._summary_worker_task.cancel()
+            try:
+                await self._summary_worker_task
+            except asyncio.CancelledError:
+                pass
+        await self._summarizer_md.flush()
         if self._llm_worker_task:
             try:
                 await asyncio.wait_for(self._drain_llm_queue(), timeout=10.0)
@@ -99,12 +115,14 @@ class Pipeline:
         filter_result = self._filter.filter(processed)
 
         transcript_delta = dg_chunk.text + " "
+        self._summarizer_md.add_chunk(dg_chunk.text)
 
         if filter_result.type == "noise":
             return PipelineOutput(
                 transcript_delta=transcript_delta,
                 jira_state=self._jira_builder.get_state(),
                 context_snapshot={},
+                summary_md=self._summarizer_md.get_summary(),
             )
 
         self._context.update(filter_result)
@@ -126,6 +144,7 @@ class Pipeline:
             transcript_delta=transcript_delta,
             jira_state=self._jira_builder.get_state(),
             context_snapshot=self._context.get_snapshot(),
+            summary_md=self._summarizer_md.get_summary(),
         )
 
     async def _llm_worker(self):
@@ -147,6 +166,12 @@ class Pipeline:
                     self._jira_builder.update(result, self._context.get_snapshot())
             except Exception:
                 pass
+
+    async def _summary_worker(self):
+        while self._running:
+            await asyncio.sleep(30)
+            if self._summarizer_md.should_update():
+                await self._summarizer_md.update()
 
     async def _drain_llm_queue(self):
         while not self._llm_queue.empty():

@@ -35,11 +35,18 @@ if st.session_state.get("_loaded_mid") != meeting_id:
         st.session_state["m_title"] = data.get("title") or f"Meeting #{meeting_id}"
         st.session_state["m_transcript"] = data["transcript"]
         st.session_state["m_tasks"] = data["tasks"]
+        st.session_state["m_summary"] = data.get("summary_md", "")
     except requests.exceptions.RequestException as e:
         st.error(f"Could not load meeting: {e}")
         st.stop()
 
 st.title(f"M{meeting_id}: {st.session_state.get('m_title', f'Meeting #{meeting_id}')}")
+
+summary_md = st.session_state.get("m_summary", "")
+if summary_md:
+    st.header("Meeting Summary")
+    st.markdown(summary_md)
+    st.divider()
 
 # Transcript
 st.header("Transcript")

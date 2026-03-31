@@ -37,7 +37,7 @@ class GeminiLLM:
     Returns a parsed dict with keys: task, description, eta, type, assignee.
     All values may be null.
 
-    Never receives raw full transcript — only resolved chunk text + context snapshot.
+    Never receives raw full transcript, only resolved chunk text + context snapshot.
     """
 
     def __init__(self, model: str = "gemini-2.5-flash-lite"):
