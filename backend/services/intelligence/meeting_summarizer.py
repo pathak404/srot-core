@@ -7,6 +7,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+_GLOSSARY = os.getenv("TRANSCRIPTION_GLOSSARY", "")
+_EXTRA_PROMPT = os.getenv("TRANSCRIPTION_EXTRA_PROMPT", "")
+
 _MEETING_SUMMARY_PROMPT = """You are a meeting summarization assistant.
 
 Produce an updated cumulative meeting summary in Markdown based on the current summary and new transcript text.
@@ -61,6 +64,12 @@ class MeetingSummarizer:
             current_summary=self._summary if self._summary else "(none yet — meeting just started)",
             new_transcript=new_text,
         )
+        if _GLOSSARY or _EXTRA_PROMPT:
+            prompt += "\nDomain glossary (use these exact spellings for all technical terms):\n"
+            if _GLOSSARY:
+                prompt += f"{_GLOSSARY}\n"
+            if _EXTRA_PROMPT:
+                prompt += f"{_EXTRA_PROMPT}\n"
         try:
             response = await self._client.aio.models.generate_content(
                 model=self._model,

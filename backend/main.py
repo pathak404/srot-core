@@ -11,18 +11,16 @@ from storage.db import (
     get_all_meetings, get_meeting, save_meeting, save_transcript, get_transcript, update_transcript,
     update_meeting_status, save_tasks, get_tasks, update_task, set_jira_ticket_id, delete_tasks, dismiss_task,
     get_all_code_entities, save_code_entity, delete_code_entity,
-    create_index_job, update_index_job, get_index_jobs, get_index_job, get_latest_job_by_path,
+    create_index_job, get_index_jobs, get_index_job, get_latest_job_by_path,
     get_domain_entities, save_domain_entity, delete_domain_entity, get_domain_entity,
     get_task, get_task_by_jira_id,
-    save_intelligence_state, save_live_tickets,
+    save_intelligence_state, get_intelligence_state, save_live_tickets,
+    get_live_meetings,
     save_meeting_summary, get_meeting_summary,
 )
-from backend.services.chunking import split_audio
-from backend.services.transcription import transcribe_meeting
 from backend.services.task_extractor import extract_tasks
 from backend.services.jira_evaluator import suggest_jira_tickets
 from backend.services.jira import create_jira_ticket, is_jira_configured
-from backend.services.live_transcription import LiveTranscriptionSession
 from backend.services.code_indexer import run_indexing
 from dataclasses import asdict
 from backend.services.intelligence.pipeline import Pipeline
@@ -43,6 +41,27 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 @app.on_event("startup")
 def startup():
     create_tables()
+    _recover_live_meetings()
+
+
+def _recover_live_meetings():
+    for m in get_live_meetings():
+        mid = m["id"]
+        intel_state = get_intelligence_state(mid)
+        if intel_state and intel_state.get("tickets") and not get_tasks(mid):
+            task_dicts = [
+                {
+                    "title": t.get("title", ""),
+                    "description": t.get("description") or "",
+                    "assignee": t.get("assignee"),
+                    "jira_worthy": True,
+                    "jira_reason": f"Recovered: {t.get('type', 'task')}",
+                    "module": "General",
+                }
+                for t in intel_state["tickets"]
+            ]
+            save_tasks(mid, task_dicts)
+        update_meeting_status(mid, "completed")
 
 
 @app.get("/config")
@@ -113,8 +132,8 @@ async def process_meeting(
 
 
 @app.get("/meetings")
-def list_meetings():
-    return get_all_meetings()
+def list_meetings(page: int = 1, per_page: int = 20):
+    return get_all_meetings(page=page, per_page=per_page)
 
 
 @app.get("/meeting/{meeting_id}")
@@ -222,9 +241,6 @@ def get_dev_task(meeting: int | None = None, task: int | None = None, jira: str 
 
 
 
-# Live Transcription 
-
-active_sessions: dict[int, LiveTranscriptionSession] = {}
 
 active_pipelines: dict[int, Pipeline] = {}
 
@@ -260,6 +276,7 @@ async def intelligence_ws(websocket: WebSocket, meeting_id: int):
                         "jira_state": asdict(output.jira_state),
                         "context_snapshot": output.context_snapshot,
                         "summary_md": output.summary_md,
+                        "is_final": output.is_final,
                     })
                 except Exception:
                     return
@@ -276,6 +293,22 @@ async def intelligence_ws(websocket: WebSocket, meeting_id: int):
                 save_intelligence_state(meeting_id, asdict(state))
                 save_live_tickets(meeting_id, state.tickets)
                 save_meeting_summary(meeting_id, pipeline.get_summary())
+                transcript_text = pipeline.get_transcript_text()
+                if transcript_text:
+                    update_transcript(meeting_id, transcript_text)
+                if state.tickets and not get_tasks(meeting_id):
+                    task_dicts = [
+                        {
+                            "title": t.get("title", ""),
+                            "description": t.get("description") or "",
+                            "assignee": t.get("assignee"),
+                            "jira_worthy": True,
+                            "jira_reason": f"Extracted live: {t.get('type', 'task')}",
+                            "module": "General",
+                        }
+                        for t in state.tickets
+                    ]
+                    save_tasks(meeting_id, task_dicts)
         except asyncio.CancelledError:
             pass
 
@@ -296,6 +329,25 @@ async def intelligence_ws(websocket: WebSocket, meeting_id: int):
     save_intelligence_state(meeting_id, asdict(final_state))
     save_live_tickets(meeting_id, final_state.tickets)
     save_meeting_summary(meeting_id, pipeline.get_summary())
+    transcript_text = pipeline.get_transcript_text()
+    if transcript_text:
+        update_transcript(meeting_id, transcript_text)
+    update_meeting_status(meeting_id, "completed")
+
+    if final_state.tickets and not get_tasks(meeting_id):
+        task_dicts = [
+            {
+                "title": t.get("title", ""),
+                "description": t.get("description") or "",
+                "assignee": t.get("assignee"),
+                "jira_worthy": True,
+                "jira_reason": f"Extracted live: {t.get('type', 'task')}",
+                "module": "General",
+            }
+            for t in final_state.tickets
+        ]
+        save_tasks(meeting_id, task_dicts)
+
     active_pipelines.pop(meeting_id, None)
 
     try:
@@ -320,94 +372,40 @@ def start_live_meeting(body: LiveMeetingCreate):
     return {"meeting_id": meeting_id}
 
 
-@app.websocket("/ws/live-transcribe/{meeting_id}")
-async def live_transcribe(websocket: WebSocket, meeting_id: int):
-    await websocket.accept()
-
-    session = LiveTranscriptionSession(meeting_id)
-    active_sessions[meeting_id] = session
-
-    try:
-        await session.start()
-
-        async def receive_audio():
-            try:
-                while True:
-                    data = await websocket.receive_bytes()
-                    await session.send_audio(data)
-            except (WebSocketDisconnect, Exception):
-                pass
-
-        async def send_transcript():
-            try:
-                async for item in session.receive_text():
-                    try:
-                        if "error" in item:
-                            await websocket.send_json({"type": "error", "text": item["error"]})
-                        else:
-                            await websocket.send_json({
-                                "type": "transcript",
-                                "text": item["text"],
-                                "is_final": item["is_final"],
-                            })
-                    except Exception:
-                        return
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                pass
-
-        async def periodic_save():
-            try:
-                while True:
-                    await asyncio.sleep(30)
-                    if session.get_buffer():
-                        update_transcript(meeting_id, session.get_buffer())
-            except asyncio.CancelledError:
-                pass
-
-        audio_task = asyncio.create_task(receive_audio())
-        transcript_task = asyncio.create_task(send_transcript())
-        save_task = asyncio.create_task(periodic_save())
-
-        # Wait for browser to disconnect, then cancel the rest
-        await audio_task
-        transcript_task.cancel()
-        save_task.cancel()
-        await asyncio.gather(transcript_task, save_task, return_exceptions=True)
-
-    except Exception as e:
-        try:
-            await websocket.send_json({"type": "error", "text": str(e)})
-        except Exception:
-            pass
-    finally:
-        buffer = await session.stop()
-        if buffer:
-            update_transcript(meeting_id, buffer)
-        active_sessions.pop(meeting_id, None)
-
-
 @app.post("/finalize-meeting/{meeting_id}")
-def finalize_meeting(meeting_id: int, background_tasks: BackgroundTasks):
+def finalize_meeting(meeting_id: int):
     transcript = get_transcript(meeting_id)
     if not transcript:
         raise HTTPException(status_code=404, detail="No transcript found")
 
-    from backend.services.transcription import refine_transcript
-    refined = refine_transcript(transcript)
-    update_transcript(meeting_id, refined)
+    update_transcript(meeting_id, transcript)
     update_meeting_status(meeting_id, "completed")
 
-    tasks = _extract_and_suggest(refined, meeting_id)
+    # Use already-extracted intelligence state — no full-transcript LLM call
+    intel_state = get_intelligence_state(meeting_id)
+    if intel_state and intel_state.get("tickets"):
+        existing_tasks = get_tasks(meeting_id)
+        if not existing_tasks:
+            task_dicts = [
+                {
+                    "title": t.get("title", ""),
+                    "description": t.get("description") or "",
+                    "assignee": t.get("assignee"),
+                    "jira_worthy": True,
+                    "jira_reason": f"Extracted live: {t.get('type', 'task')}",
+                    "module": "General",
+                }
+                for t in intel_state["tickets"]
+            ]
+            task_ids = save_tasks(meeting_id, task_dicts)
+            for i, tid in enumerate(task_ids):
+                task_dicts[i]["id"] = tid
+        else:
+            task_dicts = existing_tasks
+    else:
+        task_dicts = []
 
-    from backend.services.dev_layer import generate_and_save
-    for seq, task in enumerate(tasks, start=1):
-        if task.get("id"):
-            task["task_seq"] = seq
-            background_tasks.add_task(generate_and_save, task.copy(), meeting_id)
-
-    return {"status": "finalized", "meeting_id": meeting_id, "tasks": tasks}
+    return {"status": "finalized", "meeting_id": meeting_id, "tasks": task_dicts}
 
 
 # Code Knowledge - Index Jobs + Manual Entities

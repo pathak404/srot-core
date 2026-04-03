@@ -8,6 +8,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+_GLOSSARY = os.getenv("TRANSCRIPTION_GLOSSARY", "")
+_EXTRA_PROMPT = os.getenv("TRANSCRIPTION_EXTRA_PROMPT", "")
+
 _SYSTEM_PROMPT = """You are a meeting intelligence assistant that extracts ONLY developer-actionable tasks.
 
 Return ONLY valid JSON. No markdown fences. No explanation.
@@ -51,6 +54,13 @@ class GeminiLLM:
         """
         code_context = llm_input.get("code_context", "")
         prompt = f"{_SYSTEM_PROMPT}\n\n"
+        if _GLOSSARY or _EXTRA_PROMPT:
+            prompt += "Domain glossary (use these exact spellings for all technical terms):\n"
+            if _GLOSSARY:
+                prompt += f"{_GLOSSARY}\n"
+            if _EXTRA_PROMPT:
+                prompt += f"{_EXTRA_PROMPT}\n"
+            prompt += "\n"
         if code_context:
             prompt += (
                 f"{code_context}\n\n"

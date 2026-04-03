@@ -1,9 +1,10 @@
+import os
 import streamlit as st
 import requests
 
-API_BASE = "http://localhost:8000"
+API_BASE = os.getenv("BACKEND_URL", "http://localhost:8000")
+TASKS_PER_PAGE = 10
 
-# Fetch config
 @st.cache_data(ttl=60)
 def _get_config():
     try:
@@ -36,42 +37,43 @@ if st.session_state.get("_loaded_mid") != meeting_id:
         st.session_state["m_transcript"] = data["transcript"]
         st.session_state["m_tasks"] = data["tasks"]
         st.session_state["m_summary"] = data.get("summary_md", "")
+        st.session_state["_tasks_page"] = 1
     except requests.exceptions.RequestException as e:
         st.error(f"Could not load meeting: {e}")
         st.stop()
 
 st.title(f"M{meeting_id}: {st.session_state.get('m_title', f'Meeting #{meeting_id}')}")
 
+# Meeting Summary 
 summary_md = st.session_state.get("m_summary", "")
 if summary_md:
-    st.header("Meeting Summary")
-    st.markdown(summary_md)
-    st.divider()
+    with st.expander("Meeting Summary", expanded=True):
+        st.markdown(summary_md)
 
-# Transcript
-st.header("Transcript")
-edited_transcript = st.text_area(
-    "Edit transcript:",
-    value=st.session_state["m_transcript"],
-    height=400,
-    key="m_transcript_editor",
-)
-
-if st.button("Save & Extract Tasks"):
-    with st.spinner("Saving transcript and extracting tasks..."):
-        try:
-            resp = requests.put(
-                f"{API_BASE}/meeting/{meeting_id}/transcript",
-                json={"content": edited_transcript},
-                timeout=300,
-            )
-            resp.raise_for_status()
-            result = resp.json()
-            st.session_state["m_transcript"] = edited_transcript
-            st.session_state["m_tasks"] = result["tasks"]
-            st.success("Transcript saved! Tasks extracted.")
-        except requests.exceptions.RequestException as e:
-            st.error(f"Error: {e}")
+# Edit Transcript 
+with st.expander("Edit Transcript", expanded=False):
+    edited_transcript = st.text_area(
+        "Transcript:",
+        value=st.session_state["m_transcript"],
+        height=400,
+        key="m_transcript_editor",
+    )
+    if st.button("Save & Extract Tasks"):
+        with st.spinner("Saving transcript and extracting tasks..."):
+            try:
+                resp = requests.put(
+                    f"{API_BASE}/meeting/{meeting_id}/transcript",
+                    json={"content": edited_transcript},
+                    timeout=300,
+                )
+                resp.raise_for_status()
+                result = resp.json()
+                st.session_state["m_transcript"] = edited_transcript
+                st.session_state["m_tasks"] = result["tasks"]
+                st.session_state["_tasks_page"] = 1
+                st.success("Transcript saved! Tasks extracted.")
+            except requests.exceptions.RequestException as e:
+                st.error(f"Error: {e}")
 
 # Callbacks
 def _save_task_cb(idx):
@@ -122,15 +124,47 @@ def _dismiss_cb(idx):
         st.session_state[f"mmsg_{idx}"] = ("error", f"Error: {e}")
 
 
-# Tasks
+# Extracted Tasks 
 tasks = st.session_state.get("m_tasks", [])
 
 if tasks:
     st.divider()
-    st.header("Extracted Tasks")
 
-    for i, task in enumerate(tasks):
-        module = task.get("module", "")
+    total_tasks = len(tasks)
+    total_pages = max(1, (total_tasks + TASKS_PER_PAGE - 1) // TASKS_PER_PAGE)
+
+    if "_tasks_page" not in st.session_state:
+        st.session_state["_tasks_page"] = 1
+    st.session_state["_tasks_page"] = min(st.session_state["_tasks_page"], total_pages)
+    t_page = st.session_state["_tasks_page"]
+
+    start = (t_page - 1) * TASKS_PER_PAGE
+    end = start + TASKS_PER_PAGE
+
+    hcol1, hcol2 = st.columns([3, 2])
+    with hcol1:
+        st.header("Extracted Tasks")
+    with hcol2:
+        if total_pages > 1:
+            pc1, pc2, pc3 = st.columns([1, 2, 1])
+            with pc1:
+                if st.button("←", key="tp_prev", disabled=(t_page <= 1)):
+                    st.session_state["_tasks_page"] -= 1
+                    st.rerun()
+            with pc2:
+                st.markdown(
+                    f"<div style='text-align:center; padding-top:6px; color:#666; font-size:13px;'>"
+                    f"{t_page} / {total_pages}"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+            with pc3:
+                if st.button("→", key="tp_next", disabled=(t_page >= total_pages)):
+                    st.session_state["_tasks_page"] += 1
+                    st.rerun()
+
+    for i in range(start, min(end, total_tasks)):
+        task = tasks[i]
         dismissed = task.get("dismissed", False)
 
         label = f"T{task.get('task_seq', i + 1)}: {task.get('title', 'Untitled')}"
@@ -178,3 +212,22 @@ if tasks:
                 else:
                     st.error(msg_text)
                 del st.session_state[msg_key]
+
+    if total_pages > 1:
+        st.write("")
+        bc1, bc2, bc3 = st.columns([1, 3, 1])
+        with bc1:
+            if st.button("← Prev", key="tp_prev_b", disabled=(t_page <= 1), use_container_width=True):
+                st.session_state["_tasks_page"] -= 1
+                st.rerun()
+        with bc2:
+            st.markdown(
+                f"<div style='text-align:center; padding-top:6px; color:#666; font-size:13px;'>"
+                f"Page {t_page} of {total_pages} &nbsp;·&nbsp; {total_tasks} tasks"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+        with bc3:
+            if st.button("Next →", key="tp_next_b", disabled=(t_page >= total_pages), use_container_width=True):
+                st.session_state["_tasks_page"] += 1
+                st.rerun()

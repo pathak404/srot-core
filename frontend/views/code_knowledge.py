@@ -1,10 +1,11 @@
+import os
 import time
 from datetime import datetime, timezone
 import streamlit as st
 import requests
 import json
 
-API_BASE = "http://localhost:8000"
+API_BASE = os.getenv("BACKEND_URL", "http://localhost:8000")
 
 st.title("Code Knowledge")
 st.caption(
@@ -154,7 +155,6 @@ with tab_domain:
         "This bridges vague human language to actual code for better Jira tickets."
     )
 
-    # Fetch available projects for the selector
     try:
         projects_resp = requests.get(f"{API_BASE}/projects", timeout=5)
         project_list = [p["name"] for p in (projects_resp.json() if projects_resp.ok else [])]
@@ -163,7 +163,6 @@ with tab_domain:
 
     col_add, col_link = st.columns(2)
 
-    # Add domain entity
     with col_add:
         st.markdown("**Add Domain Entity**")
         with st.form("add_domain_entity", clear_on_submit=True):
@@ -199,8 +198,6 @@ with tab_domain:
     # Link domain entity to service
     with col_link:
         st.markdown("**Link to Service**")
-        # Project selector is outside the form so changing it triggers a rerun
-        # and populates the service dropdown dynamically.
         link_project = st.selectbox(
             "Project",
             options=[""] + project_list,
@@ -246,7 +243,6 @@ with tab_domain:
                 except requests.exceptions.RequestException as e:
                     st.error(f"Error: {e}")
 
-    # Domain entities table
     st.subheader("Registered Domain Entities")
     filter_project = st.selectbox(
         "Filter by project",

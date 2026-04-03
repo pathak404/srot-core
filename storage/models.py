@@ -1,18 +1,29 @@
 import mysql.connector
 from dotenv import load_dotenv
 import os
+import time
 
 load_dotenv()
 
 
+
 def get_connection():
-    return mysql.connector.connect(
-        host=os.getenv("MYSQL_HOST", "127.0.0.1"),
-        port=int(os.getenv("MYSQL_PORT", 3306)),
-        user=os.getenv("MYSQL_USER"),
-        password=os.getenv("MYSQL_PASSWORD"),
-        database=os.getenv("MYSQL_DATABASE"),
-    )
+    for i in range(15):
+        try:
+            return mysql.connector.connect(
+                host=os.getenv("MYSQL_HOST", "mysql"),
+                port=int(os.getenv("MYSQL_PORT", 3306)),
+                user=os.getenv("MYSQL_USER"),
+                password=os.getenv("MYSQL_PASSWORD"),
+                database=os.getenv("MYSQL_DATABASE"),
+                connection_timeout=10,
+            )
+        except Exception as e:
+            print(f"MySQL retry {i}: {e}")
+            time.sleep(3)
+
+    raise Exception("MySQL connection failed")
+
 
 
 def create_tables():

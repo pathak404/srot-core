@@ -9,6 +9,20 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+_GLOSSARY_RAW = os.getenv("TRANSCRIPTION_GLOSSARY", "")
+
+
+def _glossary_to_keywords(glossary: str) -> list[str]:
+    """Parse TRANSCRIPTION_GLOSSARY into individual keyword strings for Deepgram."""
+    if not glossary:
+        return []
+    terms = []
+    for raw in glossary.replace(",", "\n").split("\n"):
+        term = raw.split(":")[0].strip()   # drop any ": description" suffix
+        if term:
+            terms.append(term)
+    return terms
+
 
 @dataclass
 class DeepgramChunk:
@@ -32,7 +46,7 @@ class DeepgramASR:
         Consumes an async generator of raw PCM bytes (16kHz, 16-bit mono).
         Yields DeepgramChunk for each final (is_final=True) transcript event
         immediately as each message arrives.
-        Interim results are discarded, only speech_final events flow downstream.
+        Interim results are yielded with is_final=False for live display.
         """
         async with self._client.listen.v1.connect(
             model="nova-2",
@@ -43,6 +57,7 @@ class DeepgramASR:
             encoding="linear16",
             sample_rate=16000,
             channels=1,
+            keywords=_glossary_to_keywords(_GLOSSARY_RAW) or None,
         ) as connection:
 
             async def send_loop():
@@ -56,12 +71,23 @@ class DeepgramASR:
                 async for message in connection:
                     if not isinstance(message, ListenV1Results):
                         continue
-                    if not message.is_final:
-                        continue
                     alt = message.channel.alternatives[0]
                     transcript = alt.transcript.strip()
                     if not transcript:
                         continue
+
+                    if not message.is_final:
+                        # Emit lightweight interim chunk
+                        yield DeepgramChunk(
+                            text=transcript,
+                            confidence=0.0,
+                            start=0.0,
+                            end=0.0,
+                            is_final=False,
+                        )
+                        continue
+
+                    # Final chunk
                     words = alt.words or []
                     if words:
                         conf = sum(w.confidence for w in words) / len(words)

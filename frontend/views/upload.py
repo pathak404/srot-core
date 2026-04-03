@@ -1,7 +1,8 @@
+import os
 import streamlit as st
 import requests
 
-API_BASE = "http://localhost:8000"
+API_BASE = os.getenv("BACKEND_URL", "http://localhost:8000")
 
 st.title("Upload Meeting")
 
@@ -22,7 +23,7 @@ if st.button("Process Meeting", disabled=audio_file is None):
         except requests.exceptions.RequestException as e:
             st.error(f"Error processing meeting: {e}")
 
-# --- Live Meeting ---
+# Live Meeting
 st.divider()
 st.subheader("Start a Live Meeting")
 live_title = st.text_input("Live meeting title", placeholder="e.g. Daily Standup", key="live_title")

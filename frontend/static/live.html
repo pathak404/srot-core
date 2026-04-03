@@ -50,6 +50,19 @@
             <span class="transcript-placeholder" id="transcript-placeholder">Transcript will appear here...</span>
             <span id="final-text"></span><span class="interim-text" id="interim-text"></span>
         </div>
+        <details id="tickets-section" style="margin-top: 20px; display: none;">
+            <summary style="font-size: 15px; font-weight: 600; cursor: pointer; padding: 8px 0; color: #333;">
+                Live Tasks <span id="tickets-count" style="font-size: 12px; font-weight: 400; color: #888;"></span>
+            </summary>
+            <div id="tickets-panel" style="margin-top: 8px;"></div>
+        </details>
+        <details id="summary-section" style="margin-top: 12px; display: none;">
+            <summary style="font-size: 15px; font-weight: 600; cursor: pointer; padding: 8px 0; color: #333;">
+                Meeting Summary <span id="summary-badge" style="font-size: 12px; font-weight: 400; color: #888;">(live)</span>
+            </summary>
+            <div id="summary-panel" style="background: white; border: 1px solid #e2e8f0; border-radius: 12px;
+                                            padding: 20px; margin-top: 8px; font-size: 14px; line-height: 1.6;"></div>
+        </details>
         <div id="messages"></div>
         <a class="back-link" id="backLink" href="#">Back to Meetings</a>
     </div>
@@ -108,11 +121,11 @@
                 audioContext = new AudioContext({ sampleRate: 16000 });
                 sourceNode = audioContext.createMediaStreamSource(stream);
 
-                // Use ScriptProcessor for broad compatibility (AudioWorklet needs HTTPS)
+                // AudioWorklet needs HTTPS
                 const bufferSize = 4096;
                 const processorNode = audioContext.createScriptProcessor(bufferSize, 1, 1);
 
-                ws = new WebSocket(`${WS_BASE}/ws/live-transcribe/${meetingId}`);
+                ws = new WebSocket(`${WS_BASE}/ws/intelligence/${meetingId}`);
                 ws.binaryType = 'arraybuffer';
 
                 ws.onopen = () => {
@@ -134,17 +147,26 @@
 
                 ws.onmessage = (e) => {
                     const msg = JSON.parse(e.data);
-                    if (msg.type === 'transcript') {
+                    if (msg.type === 'intelligence') {
                         document.getElementById('transcript-placeholder').style.display = 'none';
                         const finalEl = document.getElementById('final-text');
                         const interimEl = document.getElementById('interim-text');
-                        if (msg.is_final) {
-                            finalEl.textContent += msg.text + ' ';
-                            interimEl.textContent = '';
+
+                        if (!msg.is_final) {
+                            interimEl.textContent = msg.transcript_delta;
                         } else {
-                            interimEl.textContent = msg.text;
+                            finalEl.textContent += msg.transcript_delta + ' ';
+                            interimEl.textContent = '';
+                            updateTickets(msg.jira_state);
+                            updateSummary(msg.summary_md);
                         }
-                        document.getElementById('transcript').scrollTop = document.getElementById('transcript').scrollHeight;
+                        document.getElementById('transcript').scrollTop =
+                            document.getElementById('transcript').scrollHeight;
+
+                    } else if (msg.type === 'final') {
+                        updateTickets(msg.jira_state);
+                        updateSummary(msg.summary_md);
+
                     } else if (msg.type === 'error') {
                         showMessage(msg.text, 'error');
                     }
@@ -180,7 +202,6 @@
 
             setStatus('done', 'Recording stopped');
             document.getElementById('btnStop').disabled = true;
-            // Short wait for server to flush transcript to DB before enabling Finalize
             setTimeout(() => {
                 document.getElementById('btnFinalize').disabled = false;
             }, 1500);
@@ -208,6 +229,41 @@
                 showMessage(`Error: ${err.message}`, 'error');
                 document.getElementById('btnFinalize').disabled = false;
             }
+        }
+        function updateTickets(jiraState) {
+            const tickets = jiraState?.tickets || [];
+            if (!tickets.length) return;
+            const section = document.getElementById('tickets-section');
+            section.style.display = 'block';
+            document.getElementById('tickets-count').textContent = `(${tickets.length})`;
+            document.getElementById('tickets-panel').innerHTML = tickets.map(t => `
+                <div style="background: white; border: 1px solid #e2e8f0; border-radius: 8px;
+                            padding: 12px 16px; margin-bottom: 8px;">
+                    <div style="font-weight: 600; font-size: 14px;">${t.title || ''}</div>
+                    <div style="font-size: 12px; color: #666; margin-top: 4px;">
+                        ${t.type || 'task'}${t.assignee ? ' · ' + t.assignee : ''}${t.eta ? ' · ' + t.eta : ''}
+                    </div>
+                    ${t.description ? `<div style="font-size: 13px; margin-top: 6px; white-space: pre-wrap;">${t.description}</div>` : ''}
+                </div>
+            `).join('');
+        }
+
+        function renderMarkdown(md) {
+            if (!md) return '';
+            return md
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                .replace(/^## (.+)$/gm, '<h3 style="margin:12px 0 4px;font-size:15px;">$1</h3>')
+                .replace(/^# (.+)$/gm, '<h2 style="margin:14px 0 6px;font-size:17px;">$1</h2>')
+                .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                .replace(/^- (.+)$/gm, '<li style="margin:2px 0;">$1</li>')
+                .replace(/(<li[^>]*>.*<\/li>\n?)+/g, '<ul style="margin:4px 0 8px 16px;padding:0;">$&</ul>')
+                .replace(/\n\n/g, '<br>');
+        }
+
+        function updateSummary(md) {
+            if (!md) return;
+            document.getElementById('summary-section').style.display = 'block';
+            document.getElementById('summary-panel').innerHTML = renderMarkdown(md);
         }
     </script>
 </body>

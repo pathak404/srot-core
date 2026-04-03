@@ -1,4 +1,5 @@
 import asyncio
+import time
 from dataclasses import dataclass
 from typing import AsyncGenerator, Optional
 
@@ -23,11 +24,13 @@ class PipelineOutput:
     jira_state: JiraState    # current full ticket + decision list
     context_snapshot: dict   # current ContextManager snapshot
     summary_md: str = ""     # current cumulative Markdown summary
+    is_final: bool = True    # False for interim chunks, True for final
 
 
 class Pipeline:
 
     _LLM_QUEUE_MAX = 50
+    _CTX_CACHE_TTL = 300         # seconds
 
     def __init__(self, meeting_id: int):
         self.meeting_id = meeting_id
@@ -49,6 +52,8 @@ class Pipeline:
         self._running = False
         self._llm_worker_task: Optional[asyncio.Task] = None
         self._summary_worker_task: Optional[asyncio.Task] = None
+        self._ctx_cache: dict = {}   # key -> (code_context_str, timestamp)
+        self._transcript_buffer: list[str] = []
 
     async def start(self):
         self._running = True
@@ -87,6 +92,9 @@ class Pipeline:
     def get_summary(self) -> str:
         return self._summarizer_md.get_summary()
 
+    def get_transcript_text(self) -> str:
+        return " ".join(self._transcript_buffer)
+
     async def stop(self) -> JiraState:
         self._running = False
         await self._audio_queue.put(None)
@@ -110,6 +118,16 @@ class Pipeline:
         return self._jira_builder.get_state()
 
     async def _process_chunk(self, dg_chunk: DeepgramChunk) -> Optional[PipelineOutput]:
+        if not dg_chunk.is_final:
+            # Interim: skip all stages, just forward text for display
+            return PipelineOutput(
+                transcript_delta=dg_chunk.text,
+                jira_state=self._jira_builder.get_state(),
+                context_snapshot={},
+                summary_md=self._summarizer_md.get_summary(),
+                is_final=False,
+            )
+        self._transcript_buffer.append(dg_chunk.text)
         annotated = self._confidence.analyze(dg_chunk)
         processed = self._chunker.process(annotated)
         filter_result = self._filter.filter(processed)
@@ -154,11 +172,18 @@ class Pipeline:
             except asyncio.TimeoutError:
                 continue
             try:
-                code_context = await asyncio.to_thread(
-                    get_jira_context,
-                    [{"title": llm_input.get("chunk", ""), "description": ""}],
-                    None,
-                )
+                chunk_text = llm_input.get("chunk", "")
+                cache_key = " ".join(chunk_text.lower().split()[:6])
+                cached = self._ctx_cache.get(cache_key)
+                if cached and (time.time() - cached[1]) < self._CTX_CACHE_TTL:
+                    code_context = cached[0]
+                else:
+                    code_context = await asyncio.to_thread(
+                        get_jira_context,
+                        [{"title": chunk_text, "description": ""}],
+                        None,
+                    )
+                    self._ctx_cache[cache_key] = (code_context, time.time())
                 if code_context:
                     llm_input["code_context"] = code_context
                 result = await self._llm.process(llm_input)

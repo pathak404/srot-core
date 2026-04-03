@@ -18,9 +18,7 @@ def _extract_terms(tasks: list[dict]) -> list[str]:
     text = " ".join(
         f"{t.get('title', '')} {t.get('description', '')}" for t in tasks
     )
-    # Split camelCase
     text = re.sub(r"([a-z])([A-Z])", r"\1 \2", text)
-    # Replace non-alphanumeric with space
     text = re.sub(r"[^a-zA-Z0-9 ]", " ", text)
     words = text.split()
     seen: set[str] = set()
@@ -41,9 +39,11 @@ def _format_graph_results(graph_results: list[dict]) -> tuple[list[str], list[st
 
     for r in graph_results:
         name = r.get("name", "")
-        if name in seen_names:
+        # composite key for entity columns so id/name clashes across entities don't dedup
+        dedup_key = f"{r.get('class_name', '')}.{name}" if r.get("entity_type") == "entity_column" else name
+        if dedup_key in seen_names:
             continue
-        seen_names.add(name)
+        seen_names.add(dedup_key)
 
         if r["entity_type"] == "enum":
             try:
@@ -70,7 +70,47 @@ def _format_graph_results(graph_results: list[dict]) -> tuple[list[str], list[st
             sig = f"{name}({params})"
             if ret:
                 sig += f" → {ret}"
+            guards = r.get("guards")
+            if guards:
+                try:
+                    guard_list = json.loads(guards) if isinstance(guards, str) else guards
+                    if guard_list:
+                        sig += f" [guards: {', '.join(guard_list)}]"
+                except Exception:
+                    pass
             function_lines.append(f"- {sig}{svc}")
+
+        elif r["entity_type"] == "entity_column":
+            entity = r.get("entity_name") or r.get("class_name") or ""
+            relation_kind = r.get("relation_kind") or ""
+            if relation_kind:
+                target = r.get("relation_target") or ""
+                descriptor = f"@{relation_kind} → {target}" if target else f"@{relation_kind}"
+            else:
+                parts = []
+                if r.get("column_type"):
+                    parts.append(r["column_type"])
+                if r.get("is_primary"):
+                    parts.append("PK")
+                if r.get("nullable"):
+                    parts.append("nullable")
+                if r.get("default_value"):
+                    parts.append(f"default={r['default_value']}")
+                descriptor = ", ".join(parts) or "column"
+            prefix = f"[{entity}]" if entity else ""
+            service_lines.append(f"- {prefix}.{name}: {descriptor}")
+
+        elif r["entity_type"] == "graphql_type":
+            kind_map = {
+                "graphql_type": "ObjectType",
+                "graphql_input": "InputType",
+                "graphql_interface": "InterfaceType",
+                "graphql_args_type": "ArgsType",
+            }
+            kind = kind_map.get(r.get("gql_kind", ""), "GraphQLType")
+            fields = r.get("fields") or []
+            fields_str = ", ".join(fields) if fields else "no fields indexed"
+            service_lines.append(f"- {name} (@{kind}): {fields_str}")
 
     return enum_lines, service_lines, function_lines
 

@@ -2,18 +2,28 @@ import json
 from storage.models import get_connection
 
 
-def get_all_meetings() -> list[dict]:
+def get_all_meetings(page: int = 1, per_page: int = 20) -> dict:
+    offset = (page - 1) * per_page
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT COUNT(*) as total FROM meetings")
+    total = cursor.fetchone()["total"]
     cursor.execute(
         "SELECT m.id, m.title, m.filename, m.status, m.source, m.created_at, "
         "(SELECT COUNT(*) FROM tasks t WHERE t.meeting_id = m.id AND t.dismissed = FALSE) as task_count "
-        "FROM meetings m ORDER BY m.created_at DESC"
+        "FROM meetings m ORDER BY m.created_at DESC LIMIT %s OFFSET %s",
+        (per_page, offset),
     )
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
-    return rows
+    return {
+        "items": rows,
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "total_pages": max(1, (total + per_page - 1) // per_page),
+    }
 
 
 def get_meeting(meeting_id: int) -> dict | None:
@@ -457,3 +467,13 @@ def get_live_tickets(meeting_id: int) -> list[dict]:
     cursor.close()
     conn.close()
     return [json.loads(r["ticket_json"]) for r in rows]
+
+
+def get_live_meetings() -> list[dict]:
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT id FROM meetings WHERE status = 'live'")
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return rows
