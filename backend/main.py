@@ -96,7 +96,6 @@ async def process_meeting(
     meeting_title = title.strip() or audio.filename
     meeting_id = save_meeting(audio.filename, meeting_title)
 
-    # Use intelligence pipeline for both transcription and task extraction
     pipeline = Pipeline(meeting_id)
     await pipeline.start()
     transcript, final_state, summary_md = await pipeline.process_file(file_path)
@@ -107,7 +106,6 @@ async def process_meeting(
     save_live_tickets(meeting_id, final_state.tickets)
     save_meeting_summary(meeting_id, summary_md)
 
-    # Convert JiraState tickets into the existing tasks DB schema for backwards compat
     task_dicts = [
         {
             "title": t["title"],
@@ -381,7 +379,6 @@ def finalize_meeting(meeting_id: int):
     update_transcript(meeting_id, transcript)
     update_meeting_status(meeting_id, "completed")
 
-    # Use already-extracted intelligence state — no full-transcript LLM call
     intel_state = get_intelligence_state(meeting_id)
     if intel_state and intel_state.get("tickets"):
         existing_tasks = get_tasks(meeting_id)

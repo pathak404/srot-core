@@ -247,7 +247,8 @@ def build_graph(project_name: str, entities: list[dict]) -> tuple[int, int]:
                 session.run(
                     "MATCH (ep:APIEndpoint {handler: $handler, project: $project}), "
                     "(s:Service {name: $svc_name, project: $project}) "
-                    "MERGE (ep)-[:BELONGS_TO]->(s)",
+                    "MERGE (ep)-[:BELONGS_TO]->(s) "
+                    "MERGE (s)-[:EXPOSES]->(ep)",
                     handler=e.get("handler", ""), svc_name=e["service"], project=project_name,
                 )
                 edge_count += 1
@@ -258,7 +259,8 @@ def build_graph(project_name: str, entities: list[dict]) -> tuple[int, int]:
                 session.run(
                     "MATCH (f:Function {name: $fn_name, project: $project, file_path: $file_path}), "
                     "(s:Service {name: $svc_name, project: $project}) "
-                    "MERGE (f)-[:DEFINED_IN]->(s)",
+                    "MERGE (f)-[:DEFINED_IN]->(s) "
+                    "MERGE (f)-[:PART_OF]->(s)",
                     fn_name=e["name"],
                     project=project_name,
                     file_path=e["file_path"],
@@ -285,7 +287,8 @@ def build_graph(project_name: str, entities: list[dict]) -> tuple[int, int]:
                         session.run(
                             "MATCH (f:Function {name: $fn_name, project: $project, file_path: $file_path}), "
                             "(en:Enum {name: $enum_name, project: $project}) "
-                            "MERGE (f)-[:USES]->(en)",
+                            "MERGE (f)-[:USES]->(en) "
+                            "MERGE (en)-[:USED_IN]->(f)",
                             fn_name=e["name"],
                             project=project_name,
                             file_path=e["file_path"],
@@ -456,6 +459,53 @@ def build_graph(project_name: str, entities: list[dict]) -> tuple[int, int]:
                         src=e["name"], target=dep_name, project=project_name,
                     )
                     edge_count += 1
+                    if e.get("type") == "resolver":
+                        session.run(
+                            "MATCH (r:Service {name: $src, project: $project}), "
+                            "(s:Service {name: $target, project: $project}) "
+                            "MERGE (r)-[:CALLS]->(s)",
+                            src=e["name"], target=dep_name, project=project_name,
+                        )
+                        edge_count += 1
+
+        # Cached importance (log usage) for faster relation scoring
+        session.run(
+            """
+            MATCH (en:Enum {project: $p})
+            OPTIONAL MATCH (f:Function)-[:USES]->(en)
+            WITH en, count(DISTINCT f) AS c
+            SET en.usage_weight = log(1.0 + toFloat(c))
+            """,
+            p=project_name,
+        )
+        session.run(
+            """
+            MATCH (s:Service {project: $p})
+            OPTIONAL MATCH (f:Function)-[:DEFINED_IN]->(s)
+            OPTIONAL MATCH (o:Service)-[:DEPENDS_ON]->(s)
+            WITH s, count(DISTINCT f) + count(DISTINCT o) AS c
+            SET s.usage_weight = log(1.0 + toFloat(c))
+            """,
+            p=project_name,
+        )
+        session.run(
+            """
+            MATCH (f:Function {project: $p})
+            OPTIONAL MATCH (ep:APIEndpoint)-[:TRIGGERS]->(f)
+            WITH f, count(DISTINCT ep) AS c
+            SET f.usage_weight = log(1.0 + toFloat(c))
+            """,
+            p=project_name,
+        )
+        session.run(
+            """
+            MATCH (g:GraphQLType {project: $p})
+            OPTIONAL MATCH (s:Service)-[:IMPORTS]->(g)
+            WITH g, count(DISTINCT s) AS c
+            SET g.usage_weight = log(1.0 + toFloat(c))
+            """,
+            p=project_name,
+        )
 
     return node_count, edge_count
 
@@ -721,6 +771,228 @@ def query_domain_context(terms: list[str], project_name: str | None = None) -> l
     return results
 
 
+def _relation_score_from_count_or_weight(count: int, usage_weight: float | None) -> float:
+    import math
+
+    if usage_weight is not None and usage_weight == usage_weight:  # not NaN
+        return min(1.0, float(usage_weight) / 3.0)
+    return min(1.0, math.log(1 + count) / 3.0)
+
+
+def count_symbol_references(project_name: str, symbol_name: str, payload_type: str) -> int:
+    """
+    Approximate inbound usage for relation scoring (entity_vector_index).
+    Prefer precomputed usage_weight on the node when present.
+    """
+    if not project_name or not symbol_name:
+        return 0
+    try:
+        driver = _get_driver()
+    except Exception:
+        return 0
+
+    pt = payload_type or ""
+    with driver.session() as session:
+        if pt == "enum":
+            row = session.run(
+                """
+                MATCH (en:Enum {name: $name, project: $project})
+                OPTIONAL MATCH (f:Function)-[:USES]->(en)
+                RETURN coalesce(en.usage_weight, null) AS uw, count(DISTINCT f) AS c
+                """,
+                name=symbol_name,
+                project=project_name,
+            ).single()
+        elif pt in ("service", "controller", "entity", "resolver", "module"):
+            row = session.run(
+                """
+                MATCH (s:Service {name: $name, project: $project})
+                OPTIONAL MATCH (f:Function)-[:DEFINED_IN]->(s)
+                OPTIONAL MATCH (other:Service)-[:DEPENDS_ON]->(s)
+                RETURN coalesce(s.usage_weight, null) AS uw,
+                       count(DISTINCT f) + count(DISTINCT other) AS c
+                """,
+                name=symbol_name,
+                project=project_name,
+            ).single()
+        elif pt == "function":
+            row = session.run(
+                """
+                MATCH (f:Function {name: $name, project: $project})
+                OPTIONAL MATCH (ep:APIEndpoint)-[:TRIGGERS]->(f)
+                RETURN coalesce(f.usage_weight, null) AS uw, count(DISTINCT ep) AS c
+                """,
+                name=symbol_name,
+                project=project_name,
+            ).single()
+        elif pt in ("graphql_type", "graphql_input", "graphql_interface", "graphql_args_type"):
+            row = session.run(
+                """
+                MATCH (g:GraphQLType {name: $name, project: $project})
+                OPTIONAL MATCH (s:Service)-[:IMPORTS]->(g)
+                RETURN coalesce(g.usage_weight, null) AS uw, count(DISTINCT s) AS c
+                """,
+                name=symbol_name,
+                project=project_name,
+            ).single()
+        else:
+            return 0
+        if not row:
+            return 0
+        uw = row.get("uw")
+        c = int(row["c"]) if row.get("c") is not None else 0
+        if uw is not None:
+            return int(min(1e6, max(c, round(float(uw) * 10))))  # preserve signal for callers using int
+        return c
+
+
+def relation_score_value(project_name: str, symbol_name: str, payload_type: str) -> float:
+    """Scalar 0-1 for FINAL_SCORE relation term (uses usage_weight when set)."""
+    if not project_name or not symbol_name:
+        return 0.0
+    try:
+        driver = _get_driver()
+    except Exception:
+        return 0.0
+
+    pt = payload_type or ""
+    with driver.session() as session:
+        if pt == "enum":
+            row = session.run(
+                """
+                MATCH (en:Enum {name: $name, project: $project})
+                OPTIONAL MATCH (f:Function)-[:USES]->(en)
+                RETURN en.usage_weight AS uw, count(DISTINCT f) AS c
+                """,
+                name=symbol_name,
+                project=project_name,
+            ).single()
+        elif pt in ("service", "controller", "entity", "resolver", "module"):
+            row = session.run(
+                """
+                MATCH (s:Service {name: $name, project: $project})
+                OPTIONAL MATCH (f:Function)-[:DEFINED_IN]->(s)
+                OPTIONAL MATCH (other:Service)-[:DEPENDS_ON]->(s)
+                RETURN s.usage_weight AS uw,
+                       count(DISTINCT f) + count(DISTINCT other) AS c
+                """,
+                name=symbol_name,
+                project=project_name,
+            ).single()
+        elif pt == "function":
+            row = session.run(
+                """
+                MATCH (f:Function {name: $name, project: $project})
+                OPTIONAL MATCH (ep:APIEndpoint)-[:TRIGGERS]->(f)
+                RETURN f.usage_weight AS uw, count(DISTINCT ep) AS c
+                """,
+                name=symbol_name,
+                project=project_name,
+            ).single()
+        elif pt in ("graphql_type", "graphql_input", "graphql_interface", "graphql_args_type"):
+            row = session.run(
+                """
+                MATCH (g:GraphQLType {name: $name, project: $project})
+                OPTIONAL MATCH (s:Service)-[:IMPORTS]->(g)
+                RETURN g.usage_weight AS uw, count(DISTINCT s) AS c
+                """,
+                name=symbol_name,
+                project=project_name,
+            ).single()
+        else:
+            return 0.0
+        if not row:
+            return 0.0
+        uw = row.get("uw")
+        c = int(row["c"]) if row.get("c") is not None else 0
+        return _relation_score_from_count_or_weight(c, float(uw) if uw is not None else None)
+
+
+def batch_relation_scores(project_name: str, payloads: list[dict]) -> list[float]:
+    """
+    One batched Neo4j round-trip per symbol type group. Same order as payloads.
+    """
+    import math
+
+    n = len(payloads)
+    if not project_name or n == 0:
+        return [0.0] * n
+    try:
+        driver = _get_driver()
+    except Exception:
+        return [0.0] * n
+
+    out = [0.0] * n
+    groups: dict[str, list[tuple[int, str]]] = {}
+    for i, pl in enumerate(payloads):
+        pt = pl.get("type") or ""
+        name = pl.get("name") or ""
+        if not name:
+            continue
+        if pt == "enum":
+            gkey = "enum"
+        elif pt == "function":
+            gkey = "function"
+        elif pt in ("graphql_type", "graphql_input", "graphql_interface", "graphql_args_type"):
+            gkey = "graphql"
+        else:
+            gkey = "service"
+        groups.setdefault(gkey, []).append((i, name))
+
+    def fill_scores(key: str, cypher: str, name_param: str = "names"):
+        idxs = groups.get(key)
+        if not idxs:
+            return
+        names = list({x[1] for x in idxs})
+        with driver.session() as session:
+            rows = session.run(cypher, names=names, project=project_name)
+            by_name: dict[str, tuple[float | None, int]] = {}
+            for r in rows:
+                by_name[r["name"]] = (r.get("uw"), int(r["c"] or 0))
+        for i, name in idxs:
+            uw, c = by_name.get(name, (None, 0))
+            out[i] = _relation_score_from_count_or_weight(c, float(uw) if uw is not None else None)
+
+    fill_scores(
+        "enum",
+        """
+        UNWIND $names AS name
+        MATCH (en:Enum {name: name, project: $project})
+        OPTIONAL MATCH (f:Function)-[:USES]->(en)
+        RETURN name, en.usage_weight AS uw, count(DISTINCT f) AS c
+        """,
+    )
+    fill_scores(
+        "service",
+        """
+        UNWIND $names AS name
+        MATCH (s:Service {name: name, project: $project})
+        OPTIONAL MATCH (f:Function)-[:DEFINED_IN]->(s)
+        OPTIONAL MATCH (o:Service)-[:DEPENDS_ON]->(s)
+        RETURN name, s.usage_weight AS uw, count(DISTINCT f) + count(DISTINCT o) AS c
+        """,
+    )
+    fill_scores(
+        "function",
+        """
+        UNWIND $names AS name
+        MATCH (f:Function {name: name, project: $project})
+        OPTIONAL MATCH (ep:APIEndpoint)-[:TRIGGERS]->(f)
+        RETURN name, f.usage_weight AS uw, count(DISTINCT ep) AS c
+        """,
+    )
+    fill_scores(
+        "graphql",
+        """
+        UNWIND $names AS name
+        MATCH (g:GraphQLType {name: name, project: $project})
+        OPTIONAL MATCH (s:Service)-[:IMPORTS]->(g)
+        RETURN name, g.usage_weight AS uw, count(DISTINCT s) AS c
+        """,
+    )
+    return out
+
+
 def get_all_projects() -> list[dict]:
     try:
         driver = _get_driver()
@@ -733,3 +1005,29 @@ def get_all_projects() -> list[dict]:
             return [{"name": r["name"], "node_count": r["node_count"]} for r in records]
     except Exception:
         return []
+
+
+def get_entity_catalog_for_extraction(project_name: str | None, limit: int = 500) -> str:
+    """
+    Known symbols from Neo4j for Stage 2 (intent / entity extraction).
+    One entry per line: Label:name
+    """
+    if not project_name:
+        return ""
+    try:
+        driver = _get_driver()
+        with driver.session() as session:
+            rows = session.run(
+                """
+                MATCH (n {project: $p})
+                WHERE n:Enum OR n:Service OR n:GraphQLType OR n:Interface
+                RETURN head(labels(n)) AS lbl, n.name AS name
+                LIMIT $lim
+                """,
+                p=project_name,
+                lim=limit,
+            )
+            lines = sorted({f"{r['lbl']}:{r['name']}" for r in rows if r.get("name")})
+            return "\n".join(lines)
+    except Exception:
+        return ""

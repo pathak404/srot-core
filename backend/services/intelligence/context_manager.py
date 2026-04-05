@@ -32,23 +32,17 @@ class ContextManager:
         text = result.chunk.text
         raw = result.chunk.raw_text
 
-        # History (use normalized text)
         self.context.history.append(text)
 
-        # Entity extraction from raw text (preserves capitalization)
         entities = [e for e in _ENTITY_RE.findall(raw) if e not in _COMMON_WORDS]
         for entity in entities:
             if entity not in self.context.last_entities:
                 self.context.last_entities.append(entity)
-        # Keep last_entities to 20 most recent
         self.context.last_entities = self.context.last_entities[-20:]
 
-        # Active issue: set when issue keyword detected
         if result.keyword_type == "issue":
-            # Use entity if available, otherwise use first part of text
             self.context.active_issue = entities[0] if entities else text.split()[0] if text else None
 
-        # Current topic: most common entity across last 3 history entries
         if len(self.context.history) >= 3:
             recent = " ".join(list(self.context.history)[-3:])
             freq: dict[str, int] = {}

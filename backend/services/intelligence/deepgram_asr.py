@@ -13,7 +13,6 @@ _GLOSSARY_RAW = os.getenv("TRANSCRIPTION_GLOSSARY", "")
 
 
 def _glossary_to_keywords(glossary: str) -> list[str]:
-    """Parse TRANSCRIPTION_GLOSSARY into individual keyword strings for Deepgram."""
     if not glossary:
         return []
     terms = []
@@ -108,10 +107,6 @@ class DeepgramASR:
                 await sender
 
     async def transcribe_file(self, file_path: str) -> list[DeepgramChunk]:
-        """
-        Transcribes an audio file using Deepgram prerecorded API.
-        Returns a list of DeepgramChunks split into ~15-second windows.
-        """
         with open(file_path, "rb") as f:
             audio_bytes = f.read()
 

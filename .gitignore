@@ -9,4 +9,3 @@ docs/
 tests/
 dev_tasks/
 .env.local
-.env.docker

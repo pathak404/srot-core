@@ -7,8 +7,6 @@ _qdrant_client = None
 
 
 class _GeminiEmbedding(BaseEmbedding):
-    """LlamaIndex-compatible embedding backed by google-genai SDK (v1 API)."""
-
     model_name: str = Field(default="models/gemini-embedding-001")
 
     def _embed(self, text: str) -> list[float]:
@@ -64,12 +62,7 @@ def index_project(
     project_name: str,
     progress_callback=None,  # callable(done: int, total: int)
 ) -> int:
-    """
-    Embed each entity's source_chunk with Gemini and store in Qdrant.
-    One vector per function / class / enum chunk - not per file.
-    Calls progress_callback(done, total) after each chunk.
-    Returns the number of documents indexed.
-    """
+    """One vector per function / class / enum chunk, Returns the number of documents indexed."""
     from llama_index.core import VectorStoreIndex, Document, StorageContext, Settings
     from llama_index.vector_stores.qdrant import QdrantVectorStore
 

@@ -3,7 +3,7 @@ from pathlib import Path
 from storage.db import update_index_job
 from backend.services.code_parser import parse_project
 from backend.services.graph_store import build_graph
-from backend.services import vector_index
+from backend.services import entity_vector_index
 
 _SKIP_DIRS = {"node_modules", "dist", "build", ".git", ".next", "coverage"}
 
@@ -51,17 +51,17 @@ async def run_indexing(job_id: int, root_path: str, project_name: str):
               f"Graph built ({node_count} nodes, {edge_count} edges), indexing vectors…",
               node_count=node_count, edge_count=edge_count)
 
-        # Qdrant vector indexing
+        # Qdrant multi-vector entity index
         doc_count = 0
-        if vector_index.is_available():
+        if entity_vector_index.is_available():
             def on_chunk_done(done: int, total: int):
                 pct = 55 + int((done / total) * 45) if total > 0 else 100
                 _save("running", pct,
-                      f"Indexing vectors: {done}/{total} chunks",
+                      f"Indexing entity vectors: {done}/{total}",
                       node_count=node_count, edge_count=edge_count)
 
             doc_count = await asyncio.to_thread(
-                vector_index.index_project, entities, project_name, on_chunk_done
+                entity_vector_index.index_entities, entities, project_name, on_chunk_done
             )
         else:
             _save("running", 100,

@@ -48,6 +48,9 @@ _GUARD_DECORATORS = {"UseGuards", "UseInterceptors", "UseFilters", "UsePipes", "
 
 _GRAPHQL_PARAM_DECORATORS = {"Args", "Parent", "Context", "Info"}
 
+# Tree-sitter attaches decorators to export_statement, not class_declaration, for `export class`.
+_EXPORT_CLASS_DECL_TYPES = frozenset({"class_declaration", "abstract_class_declaration"})
+
 
 def _node_text(node, source: bytes) -> str:
     return source[node.start_byte:node.end_byte].decode("utf-8", errors="ignore")
@@ -61,18 +64,53 @@ def _visit(node, on_enter, on_exit=None):
         on_exit(node)
 
 
-def _extract_decorator_names(class_node, source: bytes) -> list[str]:
-    names = []
-    for child in class_node.children:
-        if child.type == "decorator":
-            for sub in child.children:
-                if sub.type == "call_expression":
-                    func = sub.child_by_field_name("function")
-                    if func:
-                        names.append(_node_text(func, source))
-                elif sub.type == "identifier":
-                    names.append(_node_text(sub, source))
+def _callee_base_name(fn_node, source: bytes) -> str:
+    """Identifier used for Nest/TypeORM maps (nest.Injectable -> Injectable)."""
+    if fn_node.type == "member_expression":
+        prop = fn_node.child_by_field_name("property")
+        if prop:
+            return _node_text(prop, source)
+    raw = _node_text(fn_node, source)
+    base = raw.split("<")[0].split("(")[0].strip()
+    if "." in base:
+        return base.rsplit(".", 1)[-1]
+    return base
+
+
+def _decorator_display_names(decorator_node, source: bytes) -> list[str]:
+    """Text names for one @-decorator node (call or bare identifier)."""
+    names: list[str] = []
+    for sub in decorator_node.children:
+        if sub.type == "call_expression":
+            func = sub.child_by_field_name("function")
+            if func:
+                names.append(_node_text(func, source))
+        elif sub.type == "identifier":
+            names.append(_node_text(sub, source))
     return names
+
+
+def _extract_decorator_names_from_nodes(decorator_nodes: list, source: bytes) -> list[str]:
+    names: list[str] = []
+    for dec_node in decorator_nodes:
+        names.extend(_decorator_display_names(dec_node, source))
+    return names
+
+
+def _class_body_decorator_nodes(class_node) -> list:
+    return [c for c in class_node.children if c.type == "decorator"]
+
+
+def _all_class_decorator_nodes(export_leading: list | None, class_node) -> list:
+    out: list = []
+    if export_leading:
+        out.extend(export_leading)
+    out.extend(_class_body_decorator_nodes(class_node))
+    return out
+
+
+def _map_key_from_decorator_name(dec: str) -> str:
+    return dec.split("(")[0].split("<")[0].strip().rsplit(".", 1)[-1]
 
 
 def _extract_decorator_arg(call_node, source: bytes) -> str | None:
@@ -176,19 +214,20 @@ def _extract_class_heritage(class_node, source: bytes) -> tuple[str | None, list
     return extends_class, implements_list
 
 
-def _extract_module_metadata(class_node, source: bytes) -> dict:
+def _extract_module_metadata(decorator_nodes: list, source: bytes) -> dict:
     meta: dict = {"imports": [], "providers": [], "exports": []}
-    for child in class_node.children:
-        if child.type == "decorator":
-            for sub in child.children:
-                if sub.type == "call_expression":
-                    fn = sub.child_by_field_name("function")
-                    if fn and _node_text(fn, source) == "Module":
-                        args_node = sub.child_by_field_name("arguments")
-                        if args_node:
-                            for arg in args_node.children:
-                                if arg.type == "object":
-                                    _collect_module_arrays(arg, source, meta)
+    for child in decorator_nodes:
+        if child.type != "decorator":
+            continue
+        for sub in child.children:
+            if sub.type == "call_expression":
+                fn = sub.child_by_field_name("function")
+                if fn and _callee_base_name(fn, source) == "Module":
+                    args_node = sub.child_by_field_name("arguments")
+                    if args_node:
+                        for arg in args_node.children:
+                            if arg.type == "object":
+                                _collect_module_arrays(arg, source, meta)
     return meta
 
 
@@ -386,25 +425,26 @@ def _extract_entity_columns(class_node, source: bytes, class_name: str, file_pat
     return columns
 
 
-def _extract_class_guards(class_node, source: bytes) -> list[str]:
+def _extract_class_guards(decorator_nodes: list, source: bytes) -> list[str]:
     guards = []
-    for child in class_node.children:
-        if child.type == "decorator":
-            for sub in child.children:
-                if sub.type == "call_expression":
-                    fn = sub.child_by_field_name("function")
-                    if fn:
-                        dec_name = _node_text(fn, source)
-                        if dec_name in _GUARD_DECORATORS:
-                            args = sub.child_by_field_name("arguments")
-                            arg_names = []
-                            if args:
-                                for a in args.children:
-                                    if a.type in ("identifier", "type_identifier"):
-                                        arg_names.append(_node_text(a, source))
-                            guards.append(
-                                f"{dec_name}({', '.join(arg_names)})" if arg_names else dec_name
-                            )
+    for child in decorator_nodes:
+        if child.type != "decorator":
+            continue
+        for sub in child.children:
+            if sub.type == "call_expression":
+                fn = sub.child_by_field_name("function")
+                if fn:
+                    dec_name = _node_text(fn, source)
+                    if _callee_base_name(fn, source) in _GUARD_DECORATORS:
+                        args = sub.child_by_field_name("arguments")
+                        arg_names = []
+                        if args:
+                            for a in args.children:
+                                if a.type in ("identifier", "type_identifier"):
+                                    arg_names.append(_node_text(a, source))
+                        guards.append(
+                            f"{dec_name}({', '.join(arg_names)})" if arg_names else dec_name
+                        )
     return guards
 
 
@@ -493,8 +533,15 @@ def _parse_file(file_path: str) -> list[dict]:
     entities.extend(_extract_imports(tree.root_node, source, file_path))
 
     class_stack: list[dict] = []
+    export_class_decor_stack: list[list] = []
 
     def handle_node(node):
+        if node.type == "export_statement":
+            if any(c.type in _EXPORT_CLASS_DECL_TYPES for c in node.children):
+                export_class_decor_stack.append(
+                    [c for c in node.children if c.type == "decorator"]
+                )
+
         # Enum
         if node.type == "enum_declaration":
             name_node = node.child_by_field_name("name")
@@ -526,39 +573,42 @@ def _parse_file(file_path: str) -> list[dict]:
                 "source_chunk": source_chunk,
             })
 
-        # Class
-        elif node.type == "class_declaration":
+        # Class (including abstract); decorators may live on parent export_statement
+        elif node.type in _EXPORT_CLASS_DECL_TYPES:
             name_node = node.child_by_field_name("name")
             if not name_node:
                 return
             name = _node_text(name_node, source)
-            decorators = _extract_decorator_names(node, source)
+            export_leading = export_class_decor_stack[-1] if export_class_decor_stack else None
+            dec_nodes = _all_class_decorator_nodes(export_leading, node)
+            decorators = _extract_decorator_names_from_nodes(dec_nodes, source)
             entity_type = "class"
             for dec in decorators:
-                dec_base = dec.split("(")[0]
+                dec_base = _map_key_from_decorator_name(dec)
                 if dec_base in _DECORATOR_TYPE_MAP:
                     entity_type = _DECORATOR_TYPE_MAP[dec_base]
                     break
 
             route_prefix: str | None = None
             resolver_type: str | None = None
-            for child in node.children:
-                if child.type == "decorator":
-                    for sub in child.children:
-                        if sub.type == "call_expression":
-                            fn = sub.child_by_field_name("function")
-                            if fn:
-                                dec_name = _node_text(fn, source)
-                                if dec_name == "Controller" and route_prefix is None:
-                                    route_prefix = _extract_decorator_arg(sub, source)
-                                elif dec_name == "Resolver" and resolver_type is None:
-                                    resolver_type = _extract_decorator_arg(sub, source)
+            for dec_node in dec_nodes:
+                if dec_node.type != "decorator":
+                    continue
+                for sub in dec_node.children:
+                    if sub.type == "call_expression":
+                        fn = sub.child_by_field_name("function")
+                        if fn:
+                            base = _callee_base_name(fn, source)
+                            if base == "Controller" and route_prefix is None:
+                                route_prefix = _extract_decorator_arg(sub, source)
+                            elif base == "Resolver" and resolver_type is None:
+                                resolver_type = _extract_decorator_arg(sub, source)
 
-            class_guards = _extract_class_guards(node, source)
+            class_guards = _extract_class_guards(dec_nodes, source)
 
             module_meta: dict = {}
             if entity_type == "module":
-                module_meta = _extract_module_metadata(node, source)
+                module_meta = _extract_module_metadata(dec_nodes, source)
 
             extends_class, implements_list = _extract_class_heritage(node, source)
 
@@ -720,8 +770,11 @@ def _parse_file(file_path: str) -> list[dict]:
             })
 
     def handle_exit(node):
-        if node.type == "class_declaration" and class_stack:
+        if node.type in _EXPORT_CLASS_DECL_TYPES and class_stack:
             class_stack.pop()
+        if node.type == "export_statement":
+            if any(c.type in _EXPORT_CLASS_DECL_TYPES for c in node.children):
+                export_class_decor_stack.pop()
 
     _visit(tree.root_node, handle_node, handle_exit)
     return entities

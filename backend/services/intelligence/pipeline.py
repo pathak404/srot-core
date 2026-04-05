@@ -15,7 +15,8 @@ from .llm_processor import GeminiLLM
 from .jira_state_builder import JiraStateBuilder, JiraState
 from .periodic_summarizer import PeriodicSummarizer
 from .meeting_summarizer import MeetingSummarizer
-from backend.services.knowledge_retriever import get_jira_context
+from backend.services.knowledge_retriever import build_llm_domain_pack, get_jira_context
+from storage.db import get_latest_completed_project
 
 
 @dataclass
@@ -32,8 +33,9 @@ class Pipeline:
     _LLM_QUEUE_MAX = 50
     _CTX_CACHE_TTL = 300         # seconds
 
-    def __init__(self, meeting_id: int):
+    def __init__(self, meeting_id: int, project_name: str | None = None):
         self.meeting_id = meeting_id
+        self._project_name = project_name or get_latest_completed_project()
         self._asr = DeepgramASR()
         self._confidence = ConfidenceAnalyzer()
         self._chunker = ChunkProcessor()
@@ -177,20 +179,44 @@ class Pipeline:
                 cached = self._ctx_cache.get(cache_key)
                 if cached and (time.time() - cached[1]) < self._CTX_CACHE_TTL:
                     code_context = cached[0]
+                    pack = await asyncio.to_thread(
+                        build_llm_domain_pack, self._project_name
+                    )
                 else:
-                    code_context = await asyncio.to_thread(
-                        get_jira_context,
-                        [{"title": chunk_text, "description": ""}],
-                        None,
+                    code_context, pack = await asyncio.gather(
+                        asyncio.to_thread(
+                            get_jira_context,
+                            [{"title": chunk_text, "description": ""}],
+                            self._project_name,
+                        ),
+                        asyncio.to_thread(build_llm_domain_pack, self._project_name),
                     )
                     self._ctx_cache[cache_key] = (code_context, time.time())
                 if code_context:
                     llm_input["code_context"] = code_context
+                llm_input["project_name"] = self._project_name
+                llm_input["domain_terms"] = pack.get("domain_terms", "")
+                llm_input["entity_list"] = pack.get("entity_list", "")
+                llm_input["confusion_map"] = pack.get("confusion_map", "(none)")
                 result = await self._llm.process(llm_input)
+                cl = result.get("clarification")
+                if cl:
+                    merged = dict(cl)
+                    ps = result.get("pipeline_status")
+                    if ps is not None:
+                        merged["pipeline_status"] = ps
+                    self._jira_builder.add_clarification(merged)
                 if result.get("task"):
                     self._jira_builder.update(result, self._context.get_snapshot())
-            except Exception:
-                pass
+            except Exception as exc:
+                self._jira_builder.add_clarification(
+                    {
+                        "status": "PIPELINE_ERROR",
+                        "message": str(exc)[:500],
+                        "candidates": [],
+                        "pipeline_status": "ERROR",
+                    }
+                )
 
     async def _summary_worker(self):
         while self._running:

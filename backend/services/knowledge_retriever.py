@@ -1,9 +1,9 @@
-
 import json
+import os
 import re
 
 from backend.services.code_knowledge import get_manual_context
-from backend.services import graph_store, vector_index
+from backend.services import entity_vector_index, graph_store
 
 _STOP_WORDS = {
     "the", "and", "for", "with", "this", "that", "from", "into", "have",
@@ -182,11 +182,13 @@ def get_jira_context(tasks: list[dict], project_name: str | None = None) -> str:
         except Exception:
             pass
 
-    # 3. Semantic search (Qdrant)
+    # 3. Semantic search (Qdrant multi-vector entity index)
     vector_snippets: list[str] = []
-    if vector_index.is_available():
+    if entity_vector_index.is_available():
         try:
-            vector_snippets = vector_index.search(task_text_full, project_name, top_k=3)
+            vector_snippets = entity_vector_index.search_snippets_for_context(
+                task_text_full, project_name, top_k=3
+            )
         except Exception:
             pass
 
@@ -209,3 +211,34 @@ def get_jira_context(tasks: list[dict], project_name: str | None = None) -> str:
         return ""
 
     return "Code Knowledge:\n\n" + "\n\n".join(sections)
+
+
+def build_llm_domain_pack(project_name: str | None) -> dict[str, str]:
+    """
+    Domain vocabulary + entity catalog for intelligence Stage 1-2.
+    confusion_map: optional DOMAIN_CONFUSION_MAP env (lines like payout -> pay out).
+    """
+    from storage.db import get_domain_entities
+
+    parts: list[str] = []
+    if project_name:
+        try:
+            for row in get_domain_entities(project_name):
+                n = row.get("name") or ""
+                d = (row.get("description") or "").strip()
+                if n:
+                    parts.append(f"{n}: {d}" if d else n)
+        except Exception:
+            pass
+    domain_terms = "\n".join(parts) if parts else ""
+    entity_list = (
+        graph_store.get_entity_catalog_for_extraction(project_name)
+        if project_name
+        else ""
+    )
+    confusion_map = (os.getenv("DOMAIN_CONFUSION_MAP") or "").strip() or "(none)"
+    return {
+        "domain_terms": domain_terms,
+        "entity_list": entity_list or "(no graph catalog - index a project)",
+        "confusion_map": confusion_map,
+    }
