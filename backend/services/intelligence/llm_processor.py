@@ -190,16 +190,17 @@ def _rule_based_impact(_intent: dict, pl: dict) -> dict[str, Any]:
 
 # Stage prompts
 
-_STAGE1_CORRECT = """You are a domain-aware transcript correction system.
+_STAGE1_CORRECT = """You are a domain-aware transcript correction and translation system.
 
-Your job is to fix transcription errors using domain context.
+Your job is to convert the transcript chunk into clear, professional, and grammatically correct English.
 
 Rules:
-- Prefer domain terms over phonetically similar generic words
-- Do NOT invent new meaning
-- Keep original intent unchanged
-- Fix numbers (e.g., "five" → "5") if used as identifiers
-- If ambiguity exists, choose the most likely engineering intent
+- Translate any Hindi or Hinglish (mixed Hindi-English) into pure English.
+- Preserve the original intention, sentiment, and technical context.
+- Prefer domain terms over phonetically similar generic words.
+- Fix numbers (e.g., "five" → "5") if used as identifiers.
+- If ambiguity exists, choose the most likely engineering intent.
+- Do NOT invent new meaning.
 
 Known domain terms:
 {DOMAIN_TERMS}
@@ -211,7 +212,7 @@ Input:
 "{TRANSCRIPT}"
 
 Output:
-Return ONLY the corrected sentence."""
+Return ONLY the corrected and translated English sentence."""
 
 _STAGE2_INTENT = """You are an intent extraction engine.
 

@@ -49,7 +49,7 @@ class DeepgramASR:
         """
         async with self._client.listen.v1.connect(
             model="nova-2",
-            language="en-US",
+            language="en-IN",
             smart_format="true",
             interim_results="true",
             punctuate="true",

@@ -10,10 +10,10 @@ _GREETING_PATTERNS = re.compile(
 )
 
 _PATTERNS = {
-    "action": re.compile(r"\b(need|have|going|want|plan|ought)\s+to\b|\b(will|shall|should|must|let'?s|assign|fix)\b", re.IGNORECASE),
-    "issue": re.compile(r"\b(bug|error|issue|problem|broken|crash|failing|not working|failed)\b", re.IGNORECASE),
-    "time": re.compile(r"\b(deadline|eta|by (monday|tuesday|wednesday|thursday|friday)|next week|end of day|eod|tomorrow)\b", re.IGNORECASE),
-    "decision": re.compile(r"\b(decided|agreed|going with|we'll go|confirmed|finalized|chose|settled on)\b", re.IGNORECASE),
+    "action": re.compile(r"\b(need|have|going|want|plan|ought|supposed)\s+to\b|\b(gonna|will|shall|should|must|let'?s|assign|fix|take care of|handle|look into|follow up|check|verify|implement|update|create|build|push|deploy|test|make sure|ensure|try to|attempt to)\b|\b(karna (hai|padega)|kar dena|kar lunga( main)?|dekh lunga|sambhal lunga|try karta hu|kar diya jayega|dekh lo|dekh lena|check karna|implement karna|bana dena|dal dena|update kar dena|nikalna hai|change kar denge|add karo|karo|dekhna (hai|padega)|banana hai)\b", re.IGNORECASE),
+    "issue": re.compile(r"\b(bug|error|issue|problem|broken|crash|failing|not working|failed|glitch|lag|slow|stuck|breaking|inconsistent|not loading|not responding|blocked|blocker|failing intermittently|unexpected behavior|mismatch)\b|\b(fat gaya|chal nahi raha|dikkat|masla|atak raha hai|ruk gaya|load nahi ho raha|slow chal raha hai|hang ho raha hai|issue aa raha hai|dikkat aa rahi hai|fix karo|scene kharab hai|kaam nahi kar raha|toot gaya|fix kar denge)\b", re.IGNORECASE),
+    "time": re.compile(r"\b(deadline|eta|by (monday|tuesday|wednesday|thursday|friday)|next week|end of day|eod|tomorrow|asap|today|tonight|this evening|this week|early next week|before release|before deploy|in 2 hours|in a bit|right away|immediately|urgently)\b|\b(kal tak|aaj shaam tak|abhi|thodi der mein|jaldi|turant|abhi ke abhi|shaam tak|subah tak|is week|next sprint|release se pehle)\b", re.IGNORECASE),
+    "decision": re.compile(r"\b(decided|agreed|going with|we'll go|confirmed|finalized|chose|settled on|let's do this|we'll proceed with|sounds good|makes sense|okay with this|locked|approved|agreed on this|this works)\b|\b(final ho gaya|done hai|fix ho gaya|theek hai|theek lag raha hai|ho jayega|yehi karte hain|isko le lete hain|final hai|pakka|done hai bhai|chal ye karte hain)\b", re.IGNORECASE),
 }
 
 

@@ -133,13 +133,15 @@ class Pipeline:
                 summary_md=self._summarizer_md.get_summary(),
                 is_final=False,
             )
+        
         self._transcript_buffer.append(dg_chunk.text)
         annotated = self._confidence.analyze(dg_chunk)
         processed = self._chunker.process(annotated)
+        
         filter_result = self._filter.filter(processed)
 
         transcript_delta = dg_chunk.text + " "
-        self._summarizer_md.add_chunk(dg_chunk.text)
+        self._summarizer_md.add_chunk(dg_chunk.text) 
 
         if filter_result.type == "noise":
             return PipelineOutput(
@@ -153,7 +155,7 @@ class Pipeline:
         self._segmenter.check_and_segment(filter_result, self._context)
         resolved_text = self._resolver.resolve(processed.text, self._context.get_snapshot())
 
-        if self._trigger.should_call(filter_result, resolved_text, self._context.get_snapshot()):
+        if await self._trigger.should_call(filter_result, resolved_text, self._context.get_snapshot()):
             llm_input = {
                 "context": self._context.get_snapshot(),
                 "chunk": resolved_text,
