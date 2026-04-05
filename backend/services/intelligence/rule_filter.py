@@ -9,11 +9,11 @@ _GREETING_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
-_KEYWORDS: dict[str, list[str]] = {
-    "action": ["we need to", "let's", "lets ", "should ", "will fix", "assign", "take care of", "someone needs to"],
-    "issue":  ["bug", "error", "issue", "problem", "broken", "crash", "failing", "not working"],
-    "time":   ["deadline", "eta", "by friday", "by monday", "next week", "end of day", "eod", "tomorrow", "by eod"],
-    "decision": ["decided", "agreed", "going with", "we'll go", "confirmed", "finalized", "we chose"],
+_PATTERNS = {
+    "action": re.compile(r"\b(need|have|going|want|plan|ought)\s+to\b|\b(will|shall|should|must|let'?s|assign|fix)\b", re.IGNORECASE),
+    "issue": re.compile(r"\b(bug|error|issue|problem|broken|crash|failing|not working|failed)\b", re.IGNORECASE),
+    "time": re.compile(r"\b(deadline|eta|by (monday|tuesday|wednesday|thursday|friday)|next week|end of day|eod|tomorrow)\b", re.IGNORECASE),
+    "decision": re.compile(r"\b(decided|agreed|going with|we'll go|confirmed|finalized|chose|settled on)\b", re.IGNORECASE),
 }
 
 
@@ -47,12 +47,11 @@ class RuleFilter:
         if _GREETING_PATTERNS.search(text):
             return FilterResult(type="noise", keyword_type=None, chunk=chunk)
 
-        # Keyword detection (priority order: action > issue > time > decision)
-        for ktype, patterns in _KEYWORDS.items():
-            for pattern in patterns:
-                if pattern in text:
-                    self._last_accepted_text = text
-                    return FilterResult(type="candidate", keyword_type=ktype, chunk=chunk)
+        # Keyword detection via Regex (priority order: action > issue > time > decision)
+        for ktype, pattern in _PATTERNS.items():
+            if pattern.search(text):
+                self._last_accepted_text = text
+                return FilterResult(type="candidate", keyword_type=ktype, chunk=chunk)
 
         # Short filler with no keywords
         if len(text.split()) < 5:
@@ -61,3 +60,4 @@ class RuleFilter:
         # Longer text with no keyword - still a candidate
         self._last_accepted_text = text
         return FilterResult(type="candidate", keyword_type=None, chunk=chunk)
+

@@ -251,10 +251,12 @@ Output JSON format:
 _STAGE5_JIRA = """You are a senior backend engineer writing a Jira ticket.
 
 Rules:
-- Be precise and minimal
-- Do NOT include unrelated components
-- Only include grounded + validated entities
-- No hallucinations
+- Be precise and minimal.
+- Do NOT include file paths or directory structures in the description.
+- Start with a comprehensive, high-level summary that even non-technical Project Managers can understand.
+- Use bullet points only if required for specific change details.
+- Only include grounded + validated entities.
+- No hallucinations.
 
 Input:
 Intent:
@@ -272,7 +274,9 @@ Title:
 <short>
 
 Description:
-- bullet points of exact changes"""
+<High-level summary for PMs>
+
+- optional bullet points for specific details if needed"""
 
 
 def _strip_json_fence(raw: str) -> str:

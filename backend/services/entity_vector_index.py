@@ -510,10 +510,6 @@ def _must_filter(project_name: str, action: str, inferred_module: str | None) ->
     must: list[qm.Condition] = [
         qm.FieldCondition(key="project", match=qm.MatchValue(value=project_name)),
     ]
-    if inferred_module:
-        must.append(
-            qm.FieldCondition(key="module", match=qm.MatchValue(value=inferred_module.lower()))
-        )
     expected = _ACTION_EXPECTED_TYPES.get(action, [])
     if expected:
         must.append(

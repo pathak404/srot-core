@@ -100,6 +100,9 @@ class Pipeline:
     async def stop(self) -> JiraState:
         self._running = False
         await self._audio_queue.put(None)
+        # Signal LLM worker to finish
+        await self._llm_queue.put({"control": "stop"})
+
         if self._summary_worker_task:
             self._summary_worker_task.cancel()
             try:
@@ -107,16 +110,17 @@ class Pipeline:
             except asyncio.CancelledError:
                 pass
         await self._summarizer_md.flush()
+
         if self._llm_worker_task:
             try:
-                await asyncio.wait_for(self._drain_llm_queue(), timeout=10.0)
+                # Wait for worker to finish processing remaining items
+                await asyncio.wait_for(self._llm_worker_task, timeout=15.0)
             except asyncio.TimeoutError:
-                pass
-            self._llm_worker_task.cancel()
-            try:
-                await self._llm_worker_task
-            except asyncio.CancelledError:
-                pass
+                _log.warning("LLM worker did not stop gracefully, cancelling")
+                self._llm_worker_task.cancel()
+            except Exception as e:
+                _log.error(f"Error while waiting for LLM worker: {e}")
+
         return self._jira_builder.get_state()
 
     async def _process_chunk(self, dg_chunk: DeepgramChunk) -> Optional[PipelineOutput]:
@@ -168,11 +172,14 @@ class Pipeline:
         )
 
     async def _llm_worker(self):
-        while self._running or not self._llm_queue.empty():
+        while True:
             try:
-                llm_input = await asyncio.wait_for(self._llm_queue.get(), timeout=0.5)
-            except asyncio.TimeoutError:
-                continue
+                llm_input = await self._llm_queue.get()
+                if llm_input.get("control") == "stop":
+                    break
+            except Exception:
+                break
+
             try:
                 chunk_text = llm_input.get("chunk", "")
                 cache_key = " ".join(chunk_text.lower().split()[:6])
@@ -217,6 +224,8 @@ class Pipeline:
                         "pipeline_status": "ERROR",
                     }
                 )
+            finally:
+                self._llm_queue.task_done()
 
     async def _summary_worker(self):
         while self._running:
@@ -225,5 +234,4 @@ class Pipeline:
                 await self._summarizer_md.update()
 
     async def _drain_llm_queue(self):
-        while not self._llm_queue.empty():
-            await asyncio.sleep(0.1)
+        await self._llm_queue.join()

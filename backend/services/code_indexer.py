@@ -6,6 +6,7 @@ from backend.services.graph_store import build_graph
 from backend.services import entity_vector_index
 
 _SKIP_DIRS = {"node_modules", "dist", "build", ".git", ".next", "coverage"}
+_SKIP_FILES = {"graphql.ts", "graphql.schema.ts"}
 
 
 def _count_ts_files(root_path: str) -> int:
@@ -14,7 +15,7 @@ def _count_ts_files(root_path: str) -> int:
         1
         for ext in ("*.ts", "*.tsx")
         for f in root.rglob(ext)
-        if not any(skip in f.parts for skip in _SKIP_DIRS)
+        if not any(part.startswith(".") or part in _SKIP_DIRS for part in f.parts) and f.name not in _SKIP_FILES
     )
 
 

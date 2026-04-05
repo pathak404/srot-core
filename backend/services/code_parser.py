@@ -783,10 +783,14 @@ def _parse_file(file_path: str) -> list[dict]:
 def parse_project(root_path: str) -> list[dict]:
     root = Path(root_path)
     SKIP_DIRS = {"node_modules", "dist", "build", ".git", ".next", "coverage", "__pycache__"}
+    SKIP_FILES = {"graphql.ts", "graphql.schema.ts"}
     entities: list[dict] = []
 
     for ts_file in root.rglob("*.ts"):
-        if any(skip in ts_file.parts for skip in SKIP_DIRS):
+        # Skip if any part of the path starts with '.' or is in SKIP_DIRS
+        if any(part.startswith(".") or part in SKIP_DIRS for part in ts_file.parts):
+            continue
+        if ts_file.name in SKIP_FILES:
             continue
         try:
             entities.extend(_parse_file(str(ts_file)))
@@ -794,7 +798,10 @@ def parse_project(root_path: str) -> list[dict]:
             pass
 
     for tsx_file in root.rglob("*.tsx"):
-        if any(skip in tsx_file.parts for skip in SKIP_DIRS):
+        # Skip if any part of the path starts with '.' or is in SKIP_DIRS
+        if any(part.startswith(".") or part in SKIP_DIRS for part in tsx_file.parts):
+            continue
+        if tsx_file.name in SKIP_FILES:
             continue
         try:
             entities.extend(_parse_file(str(tsx_file)))
