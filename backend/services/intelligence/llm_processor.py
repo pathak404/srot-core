@@ -197,16 +197,16 @@ Your job is to convert the transcript chunk into clear, professional, and gramma
 Rules:
 - Translate any Hindi or Hinglish (mixed Hindi-English) into pure English.
 - Preserve the original intention, sentiment, and technical context.
-- Prefer domain terms over phonetically similar generic words.
+- Prefer domain terms and known symbols over phonetically similar generic words.
 - Fix numbers (e.g., "five" → "5") if used as identifiers.
 - If ambiguity exists, choose the most likely engineering intent.
 - Do NOT invent new meaning.
 
-Known domain terms:
+Known domain terms & technical context:
 {DOMAIN_TERMS}
 
-Common confusions:
-{CONFUSION_MAP}
+Known symbols (symbols from code):
+{ENTITY_LIST}
 
 Input:
 "{TRANSCRIPT}"
@@ -336,7 +336,6 @@ class GeminiLLM:
         chunk = (llm_input.get("chunk") or "").strip()
         project_name = llm_input.get("project_name")
         entity_list = llm_input.get("entity_list") or "(index project to populate)"
-        confusion_map = llm_input.get("confusion_map") or "(none)"
         code_context = llm_input.get("code_context") or ""
         if not chunk:
             return _with_clarification(
@@ -347,10 +346,33 @@ class GeminiLLM:
                 audit={"project": project_name},
             )
 
+        # Stage 0: Contextual symbol hinting for noise reduction
+        contextual_symbols = "(none)"
+        if project_name and entity_vector_index.is_available():
+            t0 = time.perf_counter()
+            try:
+                hits = entity_vector_index.hybrid_search_candidates(
+                    query_text=chunk,
+                    query_entity=chunk,
+                    project_name=project_name,
+                    action="UNKNOWN",
+                    inferred_module=None,
+                    top_k=10
+                )
+                confident_hits = [h for h in hits if h.get("final_score", 0) >= 0.60]
+                if confident_hits:
+                    contextual_symbols = "\n".join([
+                        f"- {h['payload'].get('type','symbol')}:{h['payload'].get('name')}" 
+                        for h in confident_hits
+                    ])
+            except Exception as e:
+                _log.warning(f"Pre-correction retrieval failed: {e}")
+            timings["s0_hinting_ms"] = (time.perf_counter() - t0) * 1000
+
         # Correction
         s1_prompt = (
             _STAGE1_CORRECT.replace("{DOMAIN_TERMS}", self._domain_terms(llm_input))
-            .replace("{CONFUSION_MAP}", confusion_map)
+            .replace("{ENTITY_LIST}", contextual_symbols)
             .replace("{TRANSCRIPT}", chunk)
         )
         t0 = time.perf_counter()
