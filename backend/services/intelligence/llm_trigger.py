@@ -25,7 +25,7 @@ class LLMTrigger:
     3. Safety: confidence_tier is "LOW" or contains unresolved pronouns.
     """
 
-    def __init__(self, model: str = "gemini-2.0-flash-lite"):
+    def __init__(self, model: str = "gemini-2.5-flash-lite"):
         self._client = genai.Client(api_key=os.getenv("GEMINI_API_KEY", ""))
         self._model = model
 
