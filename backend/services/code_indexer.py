@@ -38,7 +38,7 @@ async def run_indexing(job_id: int, root_path: str, project_name: str):
         _save("running", 5, f"Found {total_files} files, parsing…")
 
         # Tree-sitter parsing
-        entities = await asyncio.to_thread(parse_project, root_path)
+        entities = await asyncio.to_thread(parse_project, root_path, project_name)
         fn_count   = sum(1 for e in entities if e["type"] == "function")
         enum_count = sum(1 for e in entities if e["type"] == "enum")
         svc_count  = sum(1 for e in entities if e["type"] in ("service", "controller", "entity"))

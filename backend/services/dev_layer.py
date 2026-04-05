@@ -11,7 +11,7 @@ _PROMPT_TEMPLATE = """You are a senior backend engineer creating an execution-re
 
 TERMINOLOGY RULES (STRICT):
 - Project = backend system / microservice
-- Service = NestJS service class (e.g. payout.service)
+- Service = NestJS service class (e.g. payout.service.ts)
 - NEVER mix these
 
 INPUT:
@@ -26,6 +26,7 @@ Code Context:
 
 TASK:
 Generate a developer-ready markdown task file.
+This file will be the SOLE source of truth for the AI agent. It must contain ALL necessary details from the code context.
 
 OUTPUT FORMAT (STRICT MARKDOWN):
 
@@ -45,14 +46,15 @@ OUTPUT FORMAT (STRICT MARKDOWN):
 - Type: <enum / api / logic / bug / feature>
 
 ## 🏗 Affected Components
-- Service: <service names>
+- Service: <service names with .ts extension>
+- Files: <list short relative paths like project-name/src/.../file.ts>
 - Other: <enums / APIs if applicable>
 
 ## 🔍 Existing State
-<only include if known from context, else say "Unknown">
+<Detail the current implementation from Code Context. Include relevant snippets, symbols, or logic rules found.>
 
 ## ➕ Required Changes
-<step-by-step actions, concrete>
+<step-by-step actions, concrete. Reference specific files and symbols.>
 
 ## ⚠️ Constraints
 <what must NOT break>
@@ -64,13 +66,14 @@ OUTPUT FORMAT (STRICT MARKDOWN):
 <how to verify correctness>
 
 ## 🚀 Execution Hint (for AI agent)
-<how to start: where to look, what to search>
+<how to start: where to look, what to search, which files to modify first>
 
 RULES:
-- Do NOT mention file names or paths
-- Do NOT hallucinate missing code details
-- If unsure, explicitly say "Unknown"
-- Keep it precise, not verbose"""
+- USE short relative paths (e.g., project-name/src/...) provided in the context.
+- ALWAYS use full file names with extensions (e.g., payout.service.ts, not just payout.service).
+- Do NOT hallucinate missing code details.
+- If unsure, explicitly say "Unknown".
+- Keep it precise, but include all grounded technical details from the input context."""
 
 
 def _build_prompt(task: dict, code_context: str, projects: list[str]) -> str:

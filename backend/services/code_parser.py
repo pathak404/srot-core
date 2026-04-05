@@ -524,13 +524,13 @@ def _extract_imports(root_node, source: bytes, file_path: str) -> list[dict]:
     return imports
 
 
-def _parse_file(file_path: str) -> list[dict]:
+def _parse_file(file_path: str, display_path: str) -> list[dict]:
     parser = _get_parser()
     source = Path(file_path).read_bytes()
     tree = parser.parse(source)
     entities: list[dict] = []
 
-    entities.extend(_extract_imports(tree.root_node, source, file_path))
+    entities.extend(_extract_imports(tree.root_node, source, display_path))
 
     class_stack: list[dict] = []
     export_class_decor_stack: list[list] = []
@@ -569,7 +569,7 @@ def _parse_file(file_path: str) -> list[dict]:
                 "type": "enum",
                 "name": name,
                 "values": values,
-                "file_path": file_path,
+                "file_path": display_path,
                 "source_chunk": source_chunk,
             })
 
@@ -617,7 +617,7 @@ def _parse_file(file_path: str) -> list[dict]:
                 "type": entity_type,
                 "name": name,
                 "decorators": decorators,
-                "file_path": file_path,
+                "file_path": display_path,
                 "source_chunk": source_chunk,
                 "route_prefix": route_prefix,
                 "resolver_type": resolver_type,
@@ -631,11 +631,11 @@ def _parse_file(file_path: str) -> list[dict]:
 
             # Extract @Field properties for GraphQL type classes
             if entity_type in _GRAPHQL_TYPE_KINDS:
-                entities.extend(_extract_graphql_fields(node, source, name, file_path))
+                entities.extend(_extract_graphql_fields(node, source, name, display_path))
 
             # Extract @Column / @PrimaryGeneratedColumn / @ManyToOne for TypeORM entities
             if entity_type == "entity":
-                entities.extend(_extract_entity_columns(node, source, name, file_path))
+                entities.extend(_extract_entity_columns(node, source, name, display_path))
 
         # Interface
         elif node.type == "interface_declaration":
@@ -644,7 +644,7 @@ def _parse_file(file_path: str) -> list[dict]:
                 entities.append({
                     "type": "interface",
                     "name": _node_text(name_node, source),
-                    "file_path": file_path,
+                    "file_path": display_path,
                 })
 
         # Method definition
@@ -688,7 +688,7 @@ def _parse_file(file_path: str) -> list[dict]:
                 "params": params,
                 "return_type": return_type,
                 "source_chunk": source_chunk,
-                "file_path": file_path,
+                "file_path": display_path,
                 "guards": method_guards,
                 "graphql_args": gql_params,
             })
@@ -721,7 +721,7 @@ def _parse_file(file_path: str) -> list[dict]:
                             "route": route_paths[i] if i < len(route_paths) else "/",
                             "handler": fn_name,
                             "service": current_class["name"],
-                            "file_path": file_path,
+                            "file_path": display_path,
                             "guards": endpoint_guards,
                         })
 
@@ -742,7 +742,7 @@ def _parse_file(file_path: str) -> list[dict]:
                                             "route": fn_name,
                                             "handler": fn_name,
                                             "service": current_class["name"],
-                                            "file_path": file_path,
+                                            "file_path": display_path,
                                             "guards": list(method_guards),
                                             "return_gql_type": return_gql_type,
                                         })
@@ -764,7 +764,7 @@ def _parse_file(file_path: str) -> list[dict]:
                 "params": params,
                 "return_type": return_type,
                 "source_chunk": source_chunk,
-                "file_path": file_path,
+                "file_path": display_path,
                 "guards": [],
                 "graphql_args": [],
             })
@@ -780,11 +780,33 @@ def _parse_file(file_path: str) -> list[dict]:
     return entities
 
 
-def parse_project(root_path: str) -> list[dict]:
-    root = Path(root_path)
+def parse_project(root_path: str, project_name: str | None = None) -> list[dict]:
+    root = Path(root_path).absolute()
     SKIP_DIRS = {"node_modules", "dist", "build", ".git", ".next", "coverage", "__pycache__"}
     SKIP_FILES = {"graphql.ts", "graphql.schema.ts"}
     entities: list[dict] = []
+
+    def get_display_path(file_path: Path) -> str:
+        abs_path = file_path.absolute()
+        parts = abs_path.parts
+        
+        if project_name:
+            try:
+                idx = -1
+                for i, part in enumerate(parts):
+                    if part == project_name:
+                        idx = i
+                        break
+                if idx != -1:
+                    return "/".join(parts[idx:])
+            except Exception:
+                pass
+        
+        try:
+            rel = abs_path.relative_to(root)
+            return f"{root.name}/{rel}"
+        except Exception:
+            return str(abs_path)
 
     for ts_file in root.rglob("*.ts"):
         # Skip if any part of the path starts with '.' or is in SKIP_DIRS
@@ -792,8 +814,10 @@ def parse_project(root_path: str) -> list[dict]:
             continue
         if ts_file.name in SKIP_FILES:
             continue
+        
+        display_path = get_display_path(ts_file)
         try:
-            entities.extend(_parse_file(str(ts_file)))
+            entities.extend(_parse_file(str(ts_file), display_path))
         except Exception:
             pass
 
@@ -803,8 +827,10 @@ def parse_project(root_path: str) -> list[dict]:
             continue
         if tsx_file.name in SKIP_FILES:
             continue
+
+        display_path = get_display_path(tsx_file)
         try:
-            entities.extend(_parse_file(str(tsx_file)))
+            entities.extend(_parse_file(str(tsx_file), display_path))
         except Exception:
             pass
 

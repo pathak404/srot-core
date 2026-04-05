@@ -33,33 +33,32 @@ Return ONLY valid Markdown. No JSON, no code fences, no explanation."""
 
 
 class MeetingSummarizer:
-    """
-    Incrementally builds a cumulative Markdown meeting summary.
-
-    Call add_chunk() for every transcript chunk.
-    When should_update() is True, call update() to trigger an LLM refresh.
-    Call flush() at end-of-meeting to process any remaining buffer.
-    """
 
     def __init__(self, chunk_threshold: int = 8):
         self._client = genai.Client(api_key=os.getenv("GEMINI_API_KEY", ""))
         self._model = "gemini-2.5-flash-lite"
         self._chunk_threshold = chunk_threshold
-        self._buffer: list[str] = []
+        # List of [chunk_id, text] to preserve order while allowing updates
+        self._buffer: list[list[str]] = []
         self._summary: str = ""
 
-    def add_chunk(self, text: str):
+    def add_chunk(self, chunk_id: str, text: str):
         if text.strip():
-            self._buffer.append(text.strip())
+            self._buffer.append([chunk_id, text.strip()])
+
+    def update_chunk(self, chunk_id: str, corrected_text: str):
+        for item in self._buffer:
+            if item[0] == chunk_id:
+                item[1] = corrected_text.strip()
+                return
 
     def should_update(self) -> bool:
         return len(self._buffer) >= self._chunk_threshold
 
     async def update(self):
-        """Call LLM to update summary with buffered chunks. Buffer preserved on failure."""
         if not self._buffer:
             return
-        new_text = " ".join(self._buffer)
+        new_text = " ".join([item[1] for item in self._buffer])
         prompt = _MEETING_SUMMARY_PROMPT.format(
             current_summary=self._summary if self._summary else "(none yet — meeting just started)",
             new_transcript=new_text,
@@ -85,7 +84,6 @@ class MeetingSummarizer:
             pass  # Buffer preserved for next attempt
 
     async def flush(self):
-        """Force update on any remaining buffer regardless of threshold."""
         if self._buffer:
             await self.update()
 

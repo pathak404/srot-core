@@ -255,9 +255,10 @@ Rules:
 - Be precise and minimal.
 - Do NOT include file paths or directory structures in the description.
 - Start with a comprehensive, high-level summary that even non-technical Project Managers can understand.
-- Use bullet points only if required for specific change details.
+- Use bullet points only if required for specific change details or for highlighting conditions.
 - Only include grounded + validated entities.
 - No hallucinations.
+- Do NOT suggest tasks where we have to calculate something.
 
 Input:
 Intent:
@@ -393,7 +394,7 @@ class GeminiLLM:
             intent_raw = await self._generate_text(s2_prompt)
         except Exception as exc:
             _log.warning("llm_stage2_intent_failed: %s", exc)
-            return _with_clarification(
+            res = _with_clarification(
                 "INTENT_EXTRACT_FAILED",
                 "Could not extract intent from the transcript.",
                 [],
@@ -401,11 +402,23 @@ class GeminiLLM:
                 audit={"project": project_name},
                 eval_trace=_eval_trace("UNKNOWN", 0.0, "", []),
             )
+            res["corrected_text"] = corrected
+            return res
         timings["s2_intent_ms"] = (time.perf_counter() - t0) * 1000
+        
         intent = _parse_json_obj(intent_raw) or {}
         action = (intent.get("action") or "UNKNOWN").strip()
+
+        # Metadata for logging and result
+        total_ms = (time.perf_counter() - t_pipeline) * 1000
+        common_metadata = {
+            "stage_timings_ms": {k: round(v, 2) for k, v in timings.items()},
+            "corrected_text": corrected,
+        }
+
+        # Intent extraction failed
         if action == "UNKNOWN":
-            return _with_clarification(
+            res = _with_clarification(
                 "UNKNOWN_ACTION",
                 "Could not classify the requested change; try naming a concrete action and symbol.",
                 [],
@@ -418,9 +431,12 @@ class GeminiLLM:
                     [],
                 ),
             )
+            res.update(common_metadata)
+            return res
+
         conf = float(intent.get("confidence") or 0)
         if conf < _MIN_INTENT_CONFIDENCE:
-            return _with_clarification(
+            res = _with_clarification(
                 "LOW_INTENT_CONFIDENCE",
                 "Intent confidence is below threshold; rephrase with a concrete symbol, module, or action.",
                 [],
@@ -432,6 +448,8 @@ class GeminiLLM:
                     [],
                 ),
             )
+            res.update(common_metadata)
+            return res
 
         entity_hint = (intent.get("entity") or "").strip()
         module_hint = (intent.get("module_hint") or "").strip() or None
@@ -456,13 +474,15 @@ class GeminiLLM:
 
         if catalog_lines >= _MIN_CATALOG_LINES_FOR_ENTITY_GATE and entity_hint:
             if not _entity_in_catalog(entity_hint, catalog):
-                return _with_clarification(
+                res = _with_clarification(
                     "UNKNOWN_ENTITY",
                     f"Extracted entity '{entity_hint}' is not in the known symbol catalog.",
                     _structured_candidates(candidates),
                     audit={"project": project_name, "action": action},
                     eval_trace=_eval_trace(action, conf, entity_hint, candidates),
                 )
+                res.update(common_metadata)
+                return res
 
         has_vector_hits = bool(candidates)
         top_score = candidates[0]["final_score"] if candidates else 0.0
@@ -477,26 +497,30 @@ class GeminiLLM:
                     if top_n
                     else "No confident match for this intent in the indexed codebase."
                 )
-                return _with_clarification(
+                res = _with_clarification(
                     "LOW_CONFIDENCE",
                     msg,
                     sc,
                     audit={"project": project_name, "action": action},
                     eval_trace=_eval_trace(action, conf, entity_hint, candidates),
                 )
+                res.update(common_metadata)
+                return res
         else:
             tier = None
 
         if not candidates:
             if not code_context:
-                return _with_clarification(
+                res = _with_clarification(
                     "NO_INDEX_HITS",
                     "No indexed entity matches and no code context; index the project or speak more specifically.",
                     [],
                     audit={"project": project_name, "action": action},
                     eval_trace=_eval_trace(action, conf, entity_hint, candidates),
                 )
-            return _with_clarification(
+                res.update(common_metadata)
+                return res
+            res = _with_clarification(
                 "NO_VECTOR_GROUNDING",
                 "No indexed entity match for this intent; refresh the code index. "
                 "Some code context was retrieved but cannot be grounded without vector hits.",
@@ -504,30 +528,36 @@ class GeminiLLM:
                 audit={"project": project_name, "action": action},
                 eval_trace=_eval_trace(action, conf, entity_hint, candidates),
             )
+            res.update(common_metadata)
+            return res
 
         top_pl = candidates[0].get("payload") or {}
         if action in ("ADD_ENUM_VALUE", "UPDATE_ENUM") and top_pl.get("type") != "enum":
-            return _with_clarification(
+            res = _with_clarification(
                 "ENUM_ACTION_MISMATCH",
                 f"Action {action} requires an enum symbol; top match is {top_pl.get('type') or 'unknown'}.",
                 _structured_candidates(candidates),
                 audit={"project": project_name, "action": action},
                 eval_trace=_eval_trace(action, conf, entity_hint, candidates),
             )
+            res.update(common_metadata)
+            return res
 
         grounding = _grounding_from_top_candidate(candidates[0], has_vector_hits)
         best_match = (grounding.get("best_match") or "").strip()
         if not best_match:
-            return _with_clarification(
+            res = _with_clarification(
                 "LOW_CONFIDENCE",
                 "Top candidate has no symbol name.",
                 _structured_candidates(candidates),
                 audit={"project": project_name, "action": action},
                 eval_trace=_eval_trace(action, conf, entity_hint, candidates),
             )
+            res.update(common_metadata)
+            return res
 
         if entity_hint and best_match and not _hard_substring_aligns(entity_hint, best_match):
-            return _with_clarification(
+            res = _with_clarification(
                 "ALIGNMENT_FAILED",
                 f"Grounded symbol '{best_match}' does not align with intent entity '{entity_hint}'.",
                 _structured_candidates(candidates),
@@ -536,6 +566,8 @@ class GeminiLLM:
                     action, conf, entity_hint, candidates, grounded=best_match
                 ),
             )
+            res.update(common_metadata)
+            return res
 
         impact = _rule_based_impact(intent, top_pl)
 
@@ -549,7 +581,7 @@ class GeminiLLM:
             jira_raw = await self._generate_text(s5_prompt)
         except Exception as exc:
             _log.warning("llm_stage5_jira_failed: %s", exc)
-            return _with_clarification(
+            res = _with_clarification(
                 "JIRA_GENERATION_FAILED",
                 "Could not generate Jira text from grounded intent.",
                 _structured_candidates(candidates),
@@ -559,12 +591,14 @@ class GeminiLLM:
                     action, conf, entity_hint, candidates, grounded=best_match
                 ),
             )
+            res.update(common_metadata)
+            return res
         timings["s5_jira_ms"] = (time.perf_counter() - t0) * 1000
 
         title, description = _parse_jira_title_body(jira_raw)
         if not title:
             sc = _structured_candidates(candidates) if candidates else []
-            return _with_clarification(
+            res = _with_clarification(
                 "LOW_CONFIDENCE",
                 "Could not produce a ticket title from the pipeline output.",
                 sc,
@@ -573,6 +607,8 @@ class GeminiLLM:
                     action, conf, entity_hint, candidates, grounded=best_match
                 ),
             )
+            res.update(common_metadata)
+            return res
 
         if tier == "confirm" and has_vector_hits:
             description = (
@@ -611,6 +647,7 @@ class GeminiLLM:
             "eval_trace": _eval_trace(
                 action, conf, entity_hint, candidates, grounded=best_match
             ),
+            "corrected_text": corrected,
         }
         _log.info(
             json.dumps(

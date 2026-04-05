@@ -45,6 +45,8 @@ def _format_graph_results(graph_results: list[dict]) -> tuple[list[str], list[st
             continue
         seen_names.add(dedup_key)
 
+        path_hint = f" [in {r['file_path']}]" if r.get("file_path") else ""
+
         if r["entity_type"] == "enum":
             try:
                 values = json.loads(r["values_json"] or "[]")
@@ -58,10 +60,10 @@ def _format_graph_results(graph_results: list[dict]) -> tuple[list[str], list[st
                 )
             else:
                 vals_str = "no values indexed"
-            enum_lines.append(f"- {name}{svc}: {vals_str}")
+            enum_lines.append(f"- {name}{svc}{path_hint}: {vals_str}")
 
         elif r["entity_type"] == "service":
-            service_lines.append(f"- {name}")
+            service_lines.append(f"- {name}{path_hint}")
 
         elif r["entity_type"] == "function":
             svc = f" [{r['service']}]" if r.get("service") else ""
@@ -78,7 +80,7 @@ def _format_graph_results(graph_results: list[dict]) -> tuple[list[str], list[st
                         sig += f" [guards: {', '.join(guard_list)}]"
                 except Exception:
                     pass
-            function_lines.append(f"- {sig}{svc}")
+            function_lines.append(f"- {sig}{svc}{path_hint}")
 
         elif r["entity_type"] == "entity_column":
             entity = r.get("entity_name") or r.get("class_name") or ""
@@ -98,7 +100,7 @@ def _format_graph_results(graph_results: list[dict]) -> tuple[list[str], list[st
                     parts.append(f"default={r['default_value']}")
                 descriptor = ", ".join(parts) or "column"
             prefix = f"[{entity}]" if entity else ""
-            service_lines.append(f"- {prefix}.{name}: {descriptor}")
+            service_lines.append(f"- {prefix}.{name}{path_hint}: {descriptor}")
 
         elif r["entity_type"] == "graphql_type":
             kind_map = {
@@ -110,7 +112,7 @@ def _format_graph_results(graph_results: list[dict]) -> tuple[list[str], list[st
             kind = kind_map.get(r.get("gql_kind", ""), "GraphQLType")
             fields = r.get("fields") or []
             fields_str = ", ".join(fields) if fields else "no fields indexed"
-            service_lines.append(f"- {name} (@{kind}): {fields_str}")
+            service_lines.append(f"- {name} (@{kind}){path_hint}: {fields_str}")
 
     return enum_lines, service_lines, function_lines
 

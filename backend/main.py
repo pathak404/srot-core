@@ -85,6 +85,7 @@ def _extract_and_suggest(transcript: str, meeting_id: int) -> list[dict]:
 
 @app.post("/process-meeting")
 async def process_meeting(
+    background_tasks: BackgroundTasks,
     audio: UploadFile = File(...),
     title: str = Form(default=""),
     context: str = Form(default=""),
@@ -118,8 +119,11 @@ async def process_meeting(
         for t in final_state.tickets
     ]
     task_ids = save_tasks(meeting_id, task_dicts)
+    from backend.services.dev_layer import generate_and_save
     for i, tid in enumerate(task_ids):
         task_dicts[i]["id"] = tid
+        task_dicts[i]["task_seq"] = i + 1
+        background_tasks.add_task(generate_and_save, task_dicts[i].copy(), meeting_id)
 
     return {
         "meeting_id": meeting_id,
@@ -306,7 +310,12 @@ async def intelligence_ws(websocket: WebSocket, meeting_id: int):
                         }
                         for t in state.tickets
                     ]
-                    save_tasks(meeting_id, task_dicts)
+                    task_ids = save_tasks(meeting_id, task_dicts)
+                    from backend.services.dev_layer import generate_and_save
+                    for i, tid in enumerate(task_ids):
+                        task_dicts[i]["id"] = tid
+                        task_dicts[i]["task_seq"] = i + 1
+                        asyncio.create_task(asyncio.to_thread(generate_and_save, task_dicts[i].copy(), meeting_id))
         except asyncio.CancelledError:
             pass
 
@@ -344,7 +353,12 @@ async def intelligence_ws(websocket: WebSocket, meeting_id: int):
             }
             for t in final_state.tickets
         ]
-        save_tasks(meeting_id, task_dicts)
+        task_ids = save_tasks(meeting_id, task_dicts)
+        from backend.services.dev_layer import generate_and_save
+        for i, tid in enumerate(task_ids):
+            task_dicts[i]["id"] = tid
+            task_dicts[i]["task_seq"] = i + 1
+            asyncio.create_task(asyncio.to_thread(generate_and_save, task_dicts[i].copy(), meeting_id))
 
     active_pipelines.pop(meeting_id, None)
 
@@ -371,7 +385,7 @@ def start_live_meeting(body: LiveMeetingCreate):
 
 
 @app.post("/finalize-meeting/{meeting_id}")
-def finalize_meeting(meeting_id: int):
+def finalize_meeting(meeting_id: int, background_tasks: BackgroundTasks):
     transcript = get_transcript(meeting_id)
     if not transcript:
         raise HTTPException(status_code=404, detail="No transcript found")
@@ -395,8 +409,11 @@ def finalize_meeting(meeting_id: int):
                 for t in intel_state["tickets"]
             ]
             task_ids = save_tasks(meeting_id, task_dicts)
+            from backend.services.dev_layer import generate_and_save
             for i, tid in enumerate(task_ids):
                 task_dicts[i]["id"] = tid
+                task_dicts[i]["task_seq"] = i + 1
+                background_tasks.add_task(generate_and_save, task_dicts[i].copy(), meeting_id)
         else:
             task_dicts = existing_tasks
     else:

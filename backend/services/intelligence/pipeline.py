@@ -141,7 +141,7 @@ class Pipeline:
         filter_result = self._filter.filter(processed)
 
         transcript_delta = dg_chunk.text + " "
-        self._summarizer_md.add_chunk(dg_chunk.text) 
+        self._summarizer_md.add_chunk(processed.chunk_id, dg_chunk.text) 
 
         if filter_result.type == "noise":
             return PipelineOutput(
@@ -159,6 +159,7 @@ class Pipeline:
             llm_input = {
                 "context": self._context.get_snapshot(),
                 "chunk": resolved_text,
+                "chunk_id": processed.chunk_id,
             }
             if not self._llm_queue.full():
                 await self._llm_queue.put(llm_input)
@@ -184,6 +185,7 @@ class Pipeline:
 
             try:
                 chunk_text = llm_input.get("chunk", "")
+                chunk_id = llm_input.get("chunk_id")
                 cache_key = " ".join(chunk_text.lower().split()[:6])
                 cached = self._ctx_cache.get(cache_key)
                 if cached and (time.time() - cached[1]) < self._CTX_CACHE_TTL:
@@ -207,7 +209,13 @@ class Pipeline:
                 llm_input["domain_terms"] = pack.get("domain_terms", "")
                 llm_input["entity_list"] = pack.get("entity_list", "")
                 llm_input["confusion_map"] = pack.get("confusion_map", "(none)")
+                
                 result = await self._llm.process(llm_input)
+                
+                # Hybrid Summary: Update the summarizer with corrected text
+                if chunk_id and result.get("corrected_text"):
+                    self._summarizer_md.update_chunk(chunk_id, result["corrected_text"])
+
                 cl = result.get("clarification")
                 if cl:
                     merged = dict(cl)
