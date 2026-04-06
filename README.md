@@ -1,19 +1,28 @@
 # Srot Core
+Srot-core is an AI-powered engineering intelligence system that turns meetings into code-aware, execution-ready developer tasks. 
 
-Srot-core is an AI-powered engineering intelligence system that turns meetings into code-aware, execution-ready developer tasks. It bridges the gap between what is discussed in a meeting and what an engineer (or AI agent) needs to actually implement it.
+It bridges the gap between what is discussed in a meeting and what an engineer (or AI agent) needs to actually implement it.
+
+##
+
+
+| Feature           | Note-Taker Apps                    | Srot Core                           |
+| ----------------- | ---------------------------------- | ----------------------------------- |
+| Context           | Transcript only                    | Transcript + Codebase               |
+| Output            | Summaries                          | Summaries + Execution-ready tasks   |
+| Accuracy          | Generic / sometimes misleading     | Grounded in actual code             |
+| Post-Meeting Work | Manual (create tickets, find code) | Automated (Jira + task files + CLI) |
 
 ---
-
 ## What It Does
 
 Engineering teams lose significant time translating meeting discussions into actionable tickets, and those tickets rarely contain enough context for an engineer to start work immediately. srot-core solves this end to end:
 
-1. **Streaming Intelligence**: Transcribes meetings in real-time using Deepgram Nova-2 with support for Hindi.
-2. **Context-Aware Extraction**: An intelligence pipeline filters noise, resolves context, and triggers LLM processing only when actionable tasks are identified.
-3. **Generates Jira tickets**: Tasks are evaluated and shaped into well-formed Jira tickets with titles, descriptions, and assignees.
-4. **Enriches tickets with code context**: Before generating anything, srot-core queries its hybrid knowledge graph (Neo4j + Qdrant) to find the exact services, functions, enums, ORM entities, and APIs relevant to each task.
-5. **Produces dev-ready task files**: For every task, a structured markdown file is generated for use by engineers or AI coding agents. It contains the objective, affected components, required changes, constraints, and execution hints grounded in actual code.
-
+1. **Streaming Intelligence**: Real-time transcription with context resolution (handles noise, pronouns, mixed language).
+2. **Context-Aware Extraction**: Detects actionable items and avoids irrelevant chatter.
+3. **Jira-Ready Outputs**: Generates structured, non-duplicate tickets with proper context.
+4. **Codebase Enrichment**: Maps tasks to actual services, functions, entities using Neo4j + Qdrant.
+5. **Dev-Ready Task Files**: For every task, a structured markdown file is generated for use by engineers or AI coding agents.
 ---
 
 ## How It Works
@@ -24,8 +33,8 @@ Engineering teams lose significant time translating meeting discussions into act
 Audio Stream (PCM 16kHz)
         │
         ▼
-  Deepgram ASR (Nova-2)
-  (Hinglish support, interim results)
+  Deepgram ASR
+  (Hindi support, interim results)
         │
         ▼
   Confidence & Rule Filter
@@ -48,14 +57,17 @@ Audio Stream (PCM 16kHz)
   (LLM-corrected cumulative markdown)
 ```
 
-### Code Knowledge Graph: The Code's Subconscious
+### Code Knowledge
 
-srot-core doesn't just index files; it maps the silent conversations between your components.
+Srot-core indexes TypeScript/NestJS codebase into a hybrid knowledge store:
 
-- **The Skeleton (Neo4j)**: A structural graph tracking the invisible threads, how an Endpoint triggers a Function, or how a Resolver calls a Service.
-- **The Soul (Qdrant)**: A multi-vector space where code is understood by its essence. Here, functions are "neighbors" based on their intent, not just their location.
+- **Neo4j**: 
+    - **Nodes**: Project, Service (Controller, Resolver, Entity, Module), GraphQLType, Interface, APIEndpoint, Function, Enum, EntityColumn, and DomainEntity.
+    - **Relationships**: `DEFINED_IN`, `TRIGGERS`, `USES`, `HANDLES`, `DEPENDS_ON`, `EXTENDS`, `IMPLEMENTS`, `HAS_COLUMN`, `REFERENCES`.
 
-At the moment of task extraction, these two dimensions collide, providing the LLM with a grounded reality of your system's true state.
+- **Qdrant**: A multi-vector store (Semantic + Name vectors) providing a high-fidelity memory of code intent and identity. All projects share a single collection with metadata-level isolation.
+
+At task generation time, both stores are queried: graph lookups find exact structural matches (service names, enum values, function signatures), while vector search finds semantically relevant code chunks. The combined context feeds the LLM.
 
 ### Dev Task Files
 
@@ -70,7 +82,7 @@ Each task produces a file like `dev_tasks/m1-t2.md` containing:
 - Validation approach
 - Execution hint for AI agents
 
-These files are readable via API (`GET /dev-task?meeting=1&task=2` or `GET /dev-task?jira=DEV-123`).
+
 
 ---
 
@@ -257,3 +269,9 @@ UI available at `http://localhost:8501`.
 | POST   | `/domain-entities/link` | Link a domain entity to a service in Neo4j |
 
 
+
+##
+## Related
+
+
+[Srot CLI](https://github.com/pathak404/srot-cli) connects your Srot task queue directly to Claude Code, launching an interactive AI session pre-loaded with your task requirements and project context.
