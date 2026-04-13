@@ -55,6 +55,10 @@ Audio Stream (PCM 16kHz)
         ▼
   Hybrid Summary Generation
   (LLM-corrected cumulative markdown)
+        │
+        ▼
+  Dev Layer
+  (Structured task files for engineers/agents)
 ```
 
 ### Code Knowledge
